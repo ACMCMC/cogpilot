@@ -31,15 +31,19 @@ class MainActivity : AppCompatActivity() {
     private val locationCapture by lazy { LocationCapture(this) }
     private val snowflakeManager = SnowflakeManager()
     private val riskScorer = RiskScorer()
-    private val elevenLabsManager by lazy { ElevenLabsConversationManager(this) }
     private val handler = Handler(Looper.getMainLooper())
     private var isDrivingMode = false
     private var voiceActive = false
+    private var lastAutoTriggerTime = 0L
 
     private lateinit var uiManager: UIManager
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // suppress noisy third-party library logs
+        java.util.logging.Logger.getLogger("net.snowflake").level = java.util.logging.Level.WARNING
+        java.util.logging.Logger.getLogger("SnowflakeSqlApi").level = java.util.logging.Level.WARNING
         
         detectDrivingMode()
         Log.i("CogPilot", "🚗 MainActivity created | Driving Mode: $isDrivingMode")
@@ -50,27 +54,6 @@ class MainActivity : AppCompatActivity() {
             onVoiceToggle()
         }
         setContentView(uiManager.createUI())
-        
-        // Setup ElevenLabs conversation callbacks
-        elevenLabsManager.onStatusChange = { status ->
-            Log.d("CogPilot", "ElevenLabs status: $status")
-            if (status != "connected") {
-                voiceActive = false
-                uiManager.setVoiceState(false)
-            }
-        }
-        elevenLabsManager.onModeChange = { mode ->
-            Log.d("CogPilot", "ElevenLabs mode: $mode")
-        }
-        elevenLabsManager.onMessage = { source, message ->
-            Log.d("CogPilot", "Message from $source: $message")
-        }
-        elevenLabsManager.onError = { error ->
-            Log.e("CogPilot", "ElevenLabs error: $error")
-            voiceActive = false
-            uiManager.setVoiceState(false)
-            uiManager.setConnectionStatus("Voice error: $error", "#FF6B6B")
-        }
         
         if (isDrivingMode) {
             Log.i("CogPilot", "✅ DRIVING MODE DETECTED - Full interactive support enabled")
@@ -109,37 +92,13 @@ class MainActivity : AppCompatActivity() {
     private fun onVoiceToggle() {
         voiceActive = !voiceActive
         if (voiceActive) {
-            Log.i("CogPilot", "🎙️ Voice session starting")
+            Log.i("CogPilot", "🎙️ Voice session starting via button")
             uiManager.setVoiceState(true)
-            // start foreground service for background microphone access
-            startService(Intent(this, AudioCaptureService::class.java))
-            lifecycleScope.launch {
-                try {
-                    val started = elevenLabsManager.startConversation(
-                        agentId = BuildConfig.ELEVENLABS_AGENT_ID,
-                        userId = "driver"
-                    )
-                    if (started) {
-                        Log.i("CogPilot", "✓ ElevenLabs conversation active")
-                    } else {
-                        Log.e("CogPilot", "Failed to start conversation")
-                        voiceActive = false
-                        uiManager.setVoiceState(false)
-                        stopService(Intent(this@MainActivity, AudioCaptureService::class.java))
-                    }
-                } catch (e: Exception) {
-                    Log.e("CogPilot", "Voice error: ${e.message}")
-                    voiceActive = false
-                    uiManager.setVoiceState(false)
-                    stopService(Intent(this@MainActivity, AudioCaptureService::class.java))
-                }
-            }
+            VoiceAgentTrigger.start(this, source = "button_click")
         } else {
             Log.i("CogPilot", "🛑 Voice session stopping")
             uiManager.setVoiceState(false)
-            // stop foreground service
-            stopService(Intent(this, AudioCaptureService::class.java))
-            elevenLabsManager.stopConversation()
+            VoiceAgentTrigger.stop(this)
         }
     }
 
@@ -181,9 +140,19 @@ class MainActivity : AppCompatActivity() {
                                 riskScorer.recordIntervention()
                             } else if (riskData.riskScore < 0.4f) {
                                 uiManager.hideIntervention()
+                            } else if (riskData.riskScore > 0.5f && !voiceActive) {
+                                // auto-trigger voice agent when attention predicted to drop (proactive engagement)
+                                val now = System.currentTimeMillis()
+                                if (now - lastAutoTriggerTime > 30000) { // min 30s between auto-triggers
+                                    Log.i("CogPilot", "📢 Auto-triggering voice agent - attention dropping (risk: ${riskData.riskScore})")
+                                    lastAutoTriggerTime = now
+                                    VoiceAgentTrigger.start(this@MainActivity, source = "attention_drop")
+                                    voiceActive = true
+                                    uiManager.setVoiceState(true)
+                                }
                             }
                         } else {
-                            Log.d("CogPilot", "Telemetry buffer empty")
+                            // Log.d("CogPilot", "Telemetry buffer empty")  // noisy, disable
                         }
                     } catch (e: Exception) {
                         Log.e("CogPilot", "Risk update: ${e.message}", e)
@@ -222,13 +191,10 @@ class MainActivity : AppCompatActivity() {
         locationCapture.stopCapture()
         snowflakeManager.close()
         handler.removeCallbacksAndMessages(null)
-        // cleanup voice session
+        // voice service manages itself; just ensure it's stopped
         if (voiceActive) {
-            elevenLabsManager.stopConversation()
+            VoiceAgentTrigger.stop(this)
         }
-        elevenLabsManager.dispose()
-        // stop audio capture service
-        stopService(Intent(this, AudioCaptureService::class.java))
     }
 }
 

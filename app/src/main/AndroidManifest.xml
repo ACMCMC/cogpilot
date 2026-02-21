@@ -49,6 +49,12 @@
             android:exported="false"
             android:foregroundServiceType="microphone" />
 
+        <!-- Voice agent service for background conversation management -->
+        <service
+            android:name=".VoiceAgentService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
     </application>
 
 </manifest>
