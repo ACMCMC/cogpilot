@@ -82,7 +82,6 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.androidx.lifecycle.runtime)
     implementation(libs.kotlinx.coroutines.android)
-    implementation(libs.stream.webrtc.android)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

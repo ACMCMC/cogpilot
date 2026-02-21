@@ -31,7 +31,7 @@ class MainActivity : AppCompatActivity() {
     private val locationCapture by lazy { LocationCapture(this) }
     private val snowflakeManager = SnowflakeManager()
     private val riskScorer = RiskScorer()
-    private val elevenLabsManager by lazy { ElevenLabsManager(this) }
+    private val elevenLabsManager by lazy { ElevenLabsConversationManager(this) }
     private val handler = Handler(Looper.getMainLooper())
     private var isDrivingMode = false
     private var voiceActive = false
@@ -51,19 +51,22 @@ class MainActivity : AppCompatActivity() {
         }
         setContentView(uiManager.createUI())
         
-        // Setup ElevenLabs session callbacks
-        elevenLabsManager.onSessionStateChange = { state ->
-            Log.d("CogPilot", "ElevenLabs session state: $state")
-            if (state.startsWith("connection_")) {
-                val isConnected = state.contains("CONNECTED")
-                if (!isConnected) {
-                    voiceActive = false
-                    uiManager.setVoiceState(false)
-                }
+        // Setup ElevenLabs conversation callbacks
+        elevenLabsManager.onStatusChange = { status ->
+            Log.d("CogPilot", "ElevenLabs status: $status")
+            if (status != "connected") {
+                voiceActive = false
+                uiManager.setVoiceState(false)
             }
         }
-        elevenLabsManager.onSessionError = { error ->
-            Log.e("CogPilot", "ElevenLabs session error: $error")
+        elevenLabsManager.onModeChange = { mode ->
+            Log.d("CogPilot", "ElevenLabs mode: $mode")
+        }
+        elevenLabsManager.onMessage = { source, message ->
+            Log.d("CogPilot", "Message from $source: $message")
+        }
+        elevenLabsManager.onError = { error ->
+            Log.e("CogPilot", "ElevenLabs error: $error")
             voiceActive = false
             uiManager.setVoiceState(false)
             uiManager.setConnectionStatus("Voice error: $error", "#FF6B6B")
@@ -111,23 +114,24 @@ class MainActivity : AppCompatActivity() {
             // start foreground service for background microphone access
             startService(Intent(this, AudioCaptureService::class.java))
             lifecycleScope.launch {
-                val token = elevenLabsManager.getWebrtcToken("driver")
-                if (token.isNullOrBlank()) {
-                    Log.e("CogPilot", "ElevenLabs token failed")
-                    voiceActive = false
-                    uiManager.setVoiceState(false)
-                    stopService(Intent(this@MainActivity, AudioCaptureService::class.java))
-                } else {
-                    Log.i("CogPilot", "ElevenLabs token ok, starting WebRTC session")
-                    val sessionStarted = elevenLabsManager.startSession(token)
-                    if (sessionStarted) {
-                        Log.i("CogPilot", "✓ WebRTC session active and ready")
+                try {
+                    val started = elevenLabsManager.startConversation(
+                        agentId = BuildConfig.ELEVENLABS_AGENT_ID,
+                        userId = "driver"
+                    )
+                    if (started) {
+                        Log.i("CogPilot", "✓ ElevenLabs conversation active")
                     } else {
-                        Log.e("CogPilot", "Failed to start WebRTC session")
+                        Log.e("CogPilot", "Failed to start conversation")
                         voiceActive = false
                         uiManager.setVoiceState(false)
                         stopService(Intent(this@MainActivity, AudioCaptureService::class.java))
                     }
+                } catch (e: Exception) {
+                    Log.e("CogPilot", "Voice error: ${e.message}")
+                    voiceActive = false
+                    uiManager.setVoiceState(false)
+                    stopService(Intent(this@MainActivity, AudioCaptureService::class.java))
                 }
             }
         } else {
@@ -135,9 +139,7 @@ class MainActivity : AppCompatActivity() {
             uiManager.setVoiceState(false)
             // stop foreground service
             stopService(Intent(this, AudioCaptureService::class.java))
-            lifecycleScope.launch {
-                elevenLabsManager.stopSession()
-            }
+            elevenLabsManager.stopConversation()
         }
     }
 
@@ -222,10 +224,9 @@ class MainActivity : AppCompatActivity() {
         handler.removeCallbacksAndMessages(null)
         // cleanup voice session
         if (voiceActive) {
-            lifecycleScope.launch {
-                elevenLabsManager.stopSession()
-            }
+            elevenLabsManager.stopConversation()
         }
+        elevenLabsManager.dispose()
         // stop audio capture service
         stopService(Intent(this, AudioCaptureService::class.java))
     }
