@@ -3,10 +3,7 @@ package fyi.acmc.cogpilot
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import net.snowflake.client.jdbc.SnowflakeDriver
-import java.sql.Connection
-import java.sql.DriverManager
-import java.sql.Statement
+import org.json.JSONObject
 
 /**
  * SnowflakeManager: Direct connection to Snowflake from Android.
@@ -14,180 +11,119 @@ import java.sql.Statement
  */
 class SnowflakeManager {
 
-    private var connection: Connection? = null
-    
-    private val connectionUrl: String
-        get() {
-            val account = BuildConfig.SNOWFLAKE_ACCOUNT
-            val user = BuildConfig.SNOWFLAKE_USER
-            val password = BuildConfig.SNOWFLAKE_PASSWORD
-            val warehouse = BuildConfig.SNOWFLAKE_WAREHOUSE
-            val db = BuildConfig.SNOWFLAKE_DATABASE
-            val schema = BuildConfig.SNOWFLAKE_SCHEMA
-            val role = BuildConfig.SNOWFLAKE_ROLE
-            
-            return "jdbc:snowflake://$account/?user=$user&password=$password&role=$role&warehouse=$warehouse&db=$db&schema=$schema"
-        }
+    private val sqlApi = SnowflakeSqlApiClient()
 
     suspend fun initConnection(): Boolean = withContext(Dispatchers.IO) {
-        return@withContext try {
-            DriverManager.registerDriver(SnowflakeDriver())
-            connection = DriverManager.getConnection(connectionUrl)
+        val res = sqlApi.execute("SELECT 1")
+        val ok = res.optString("code", "") == "0000" || res.has("data")
+        if (ok) {
             Log.i("SnowflakeManager", "✓ Connected to Snowflake")
             initSchema()
-            true
-        } catch (e: Exception) {
-            Log.e("SnowflakeManager", "✗ Connection failed: ${e.message}")
-            false
+        } else {
+            Log.e("SnowflakeManager", "✗ Connection failed: ${res.optString("message", "unknown")}")
         }
+        ok
     }
 
     private fun initSchema() {
-        try {
-            val stmt = connection!!.createStatement()
-            
-            stmt.executeUpdate("""
-                CREATE TABLE IF NOT EXISTS DRIVER_LOGS (
-                    id INTEGER AUTOINCREMENT,
-                    timestamp BIGINT NOT NULL,
-                    speed FLOAT NOT NULL,
-                    heading FLOAT NOT NULL,
-                    latitude FLOAT NOT NULL,
-                    longitude FLOAT NOT NULL,
-                    user_text VARCHAR,
-                    sentiment_score FLOAT,
-                    risk_score FLOAT,
-                    created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
-                    PRIMARY KEY (id)
-                )
-            """)
-            
-            stmt.executeUpdate("""
-                INSERT INTO USER_PROFILE (driver_id, interest_topics, complexity_level)
-                SELECT 1, 'Quantum Physics,90s Rock,Philosophy', 'advanced'
-                WHERE NOT EXISTS (SELECT 1 FROM USER_PROFILE WHERE driver_id = 1)
-            """)
-            
-            Log.i("SnowflakeManager", "✓ Schema initialized")
-            stmt.close()
-        } catch (e: Exception) {
-            Log.d("SnowflakeManager", "Schema already exists or error: ${e.message}")
-        }
+        sqlApi.execute("""
+            CREATE TABLE IF NOT EXISTS DRIVER_LOGS (
+                id INTEGER AUTOINCREMENT,
+                timestamp BIGINT NOT NULL,
+                speed FLOAT NOT NULL,
+                heading FLOAT NOT NULL,
+                latitude FLOAT NOT NULL,
+                longitude FLOAT NOT NULL,
+                user_text VARCHAR,
+                sentiment_score FLOAT,
+                risk_score FLOAT,
+                created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+                PRIMARY KEY (id)
+            )
+        """.trimIndent())
+
+        sqlApi.execute("""
+            CREATE TABLE IF NOT EXISTS USER_PROFILE (
+                driver_id INTEGER PRIMARY KEY,
+                interest_topics VARCHAR,
+                complexity_level VARCHAR,
+                created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+            )
+        """.trimIndent())
+
+        sqlApi.execute("""
+            CREATE TABLE IF NOT EXISTS COGNITIVE_STIMULI (
+                id INTEGER AUTOINCREMENT,
+                stimulus_type VARCHAR,
+                prompt VARCHAR,
+                response TEXT,
+                generated_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+                PRIMARY KEY (id)
+            )
+        """.trimIndent())
+
+        sqlApi.execute("""
+            INSERT INTO USER_PROFILE (driver_id, interest_topics, complexity_level)
+            SELECT 1, 'Quantum Physics,90s Rock,Philosophy', 'advanced'
+            WHERE NOT EXISTS (SELECT 1 FROM USER_PROFILE WHERE driver_id = 1)
+        """.trimIndent())
+
+        Log.i("SnowflakeManager", "✓ Schema initialized")
     }
 
     suspend fun insertTelemetry(timestamp: Long, speed: Float, heading: Float, lat: Double, lon: Double) {
         withContext(Dispatchers.IO) {
-            try {
-                val stmt = connection!!.prepareStatement("""
-                    INSERT INTO DRIVER_LOGS (timestamp, speed, heading, latitude, longitude)
-                    VALUES (?, ?, ?, ?, ?)
-                """)
-                stmt.setLong(1, timestamp)
-                stmt.setFloat(2, speed)
-                stmt.setFloat(3, heading)
-                stmt.setDouble(4, lat)
-                stmt.setDouble(5, lon)
-                stmt.executeUpdate()
-                stmt.close()
-                
-                Log.d("SnowflakeManager", "Telemetry inserted: speed=$speed, heading=$heading")
-            } catch (e: Exception) {
-                Log.e("SnowflakeManager", "Insert failed: ${e.message}")
-            }
+            val sql = """
+                INSERT INTO DRIVER_LOGS (timestamp, speed, heading, latitude, longitude)
+                VALUES ($timestamp, $speed, $heading, $lat, $lon)
+            """.trimIndent()
+            sqlApi.execute(sql)
+            Log.d("SnowflakeManager", "Telemetry inserted: speed=$speed, heading=$heading")
         }
     }
 
     suspend fun getLastNLogs(n: Int = 24): List<FloatArray> = withContext(Dispatchers.IO) {
-        return@withContext try {
-            val stmt = connection!!.createStatement()
-            val rs = stmt.executeQuery("""
-                SELECT speed, heading FROM DRIVER_LOGS
-                ORDER BY timestamp DESC
-                LIMIT $n
-            """)
-            
-            val logs = mutableListOf<FloatArray>()
-            while (rs.next()) {
-                logs.add(floatArrayOf(rs.getFloat(1), rs.getFloat(2)))
-            }
-            
-            rs.close()
-            stmt.close()
-            logs.reversed()  // oldest to newest
-        } catch (e: Exception) {
-            Log.e("SnowflakeManager", "Query failed: ${e.message}")
-            emptyList()
-        }
+        return@withContext sqlApi.querySpeedHeading(n)
     }
 
     suspend fun getSentiment(text: String): Float = withContext(Dispatchers.IO) {
-        return@withContext try {
-            val stmt = connection!!.createStatement()
-            val rs = stmt.executeQuery("""
-                SELECT SNOWFLAKE.CORTEX.SENTIMENT('$text') as sent
-            """)
-            
-            val sentiment = if (rs.next()) rs.getFloat(1) else 0.5f
-            rs.close()
-            stmt.close()
-            
-            Log.i("SnowflakeManager", "Sentiment: $sentiment for text: ${text.take(50)}")
-            sentiment
-        } catch (e: Exception) {
-            Log.e("SnowflakeManager", "Cortex.Sentiment failed: ${e.message}")
-            0.5f
-        }
+        val sql = "SELECT SNOWFLAKE.CORTEX.SENTIMENT('$text') as sent"
+        val result = sqlApi.execute(sql)
+        val data = result.optJSONArray("data")
+        val sentiment = data?.optJSONArray(0)?.optDouble(0, 0.5)?.toFloat() ?: 0.5f
+        Log.i("SnowflakeManager", "Sentiment: $sentiment for text: ${text.take(50)}")
+        sentiment
     }
 
     suspend fun generateStimulus(): String = withContext(Dispatchers.IO) {
-        return@withContext try {
-            val interests = "Quantum Physics, 90s Rock, Philosophy"
-            val prompt = """You are a cognitive stimulation specialist. The driver is becoming drowsy.
+        val interests = "Quantum Physics, 90s Rock, Philosophy"
+        val prompt = """You are a cognitive stimulation specialist. The driver is becoming drowsy.
 User Interests: $interests
 Generate a SHORT, PROVOCATIVE question under 20 words."""
-            
-            val stmt = connection!!.createStatement()
-            val rs = stmt.executeQuery("""
-                SELECT SNOWFLAKE.CORTEX.COMPLETE(
-                    'snowflake-arctic',
-                    '[{"role": "user", "content": "$prompt"}]'
-                ) as response
-            """)
-            
-            val response = if (rs.next()) rs.getString(1) else "Stay focused!"
-            rs.close()
-            stmt.close()
-            
-            Log.i("SnowflakeManager", "✓ Arctic generated: ${response.take(80)}")
-            
-            // Save to DB
-            try {
-                val insertStmt = connection!!.prepareStatement("""
-                    INSERT INTO COGNITIVE_STIMULI (stimulus_type, prompt, response)
-                    VALUES (?, ?, ?)
-                """)
-                insertStmt.setString(1, "debate")
-                insertStmt.setString(2, prompt.take(200))
-                insertStmt.setString(3, response)
-                insertStmt.executeUpdate()
-                insertStmt.close()
-            } catch (e: Exception) {
-                Log.d("SnowflakeManager", "Could not save stimulus: ${e.message}")
-            }
-            
-            response
-        } catch (e: Exception) {
-            Log.e("SnowflakeManager", "Cortex.Complete failed: ${e.message}")
-            "Can you tell me about your favorite topic?"
-        }
+
+        val sql = """
+            SELECT SNOWFLAKE.CORTEX.COMPLETE(
+                'snowflake-arctic',
+                '[{"role": "user", "content": "$prompt"}]'
+            ) as response
+        """.trimIndent()
+
+        val result = sqlApi.execute(sql)
+        val data = result.optJSONArray("data")
+        val response = data?.optJSONArray(0)?.optString(0, "Stay focused!") ?: "Stay focused!"
+
+        Log.i("SnowflakeManager", "✓ Arctic generated: ${response.take(80)}")
+
+        val insert = """
+            INSERT INTO COGNITIVE_STIMULI (stimulus_type, prompt, response)
+            VALUES ('debate', '${prompt.replace("'", "''").take(200)}', '${response.replace("'", "''")}')
+        """.trimIndent()
+        sqlApi.execute(insert)
+
+        response
     }
 
     fun close() {
-        try {
-            connection?.close()
-            Log.i("SnowflakeManager", "Connection closed")
-        } catch (e: Exception) {
-            Log.e("SnowflakeManager", "Close failed: ${e.message}")
-        }
+        Log.i("SnowflakeManager", "Session closed")
     }
 }

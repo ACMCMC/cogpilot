@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <array name="com_google_android_gms_fonts_certs">
+        <item>@array/com_google_android_gms_fonts_certs_dev</item>
+        <item>@array/com_google_android_gms_fonts_certs_prod</item>
+    </array>
+
+    <array name="com_google_android_gms_fonts_certs_dev">
+        <item>MIIEqDCCApCgAwIBAgIRAKR1s1u5CrFPGp8I0J7Qv+AwDQYJKoZIhvcNAQELBQAw
+            GDEWMBQGA1UEAxMNR29vZ2xlIERldmVsb3BlcjAeFw0xODA1MDgwMDAwMDBaFw0z
+            ODA1MDgwMDAwMDBaMBgxFjAUBgNVBAMTDUdvb2dsZSBEZXZlbG9wZXIwggEiMA0G
+            CSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQC7h+g1oWlp8Z4SFu3XqV+GEfYa6F1t
+            0XzP0p4VX0lNQnSa1xHgX7MVZavkG5GntxE1EwGQYPCoyy8h+J8OGH1fgr3IuL3G
+            7/8EJlwzANo1c5j4t+R8N+6Z6A1Il0sbF1dKc1uOgaEW2m4wWQ1f3yZB6C9S1TDT
+            4u5d2GdF0pXy8lFf3e5TLT9nXxg5BTE0b4dYTrCfyx0k5VYv2b2Lr8Ggqk6h5a5e
+            4D3xkP11T5aQ8B95w+7rJz2Xx+gqYd1ZQH+oKf7su9aG3XK5nX7K1xQe4x5sEhV+
+            q7mJ7vFjU5+8jJfE3VxZzF3PAgMBAAGjITAfMB0GA1UdDgQWBBT7I7d3H0P8Vccv
+            0g4uZpWb2H7rHzANBgkqhkiG9w0BAQsFAAOCAQEAQvSc1G3Kq6oQXQ3Z3G6F3c8P
+            k6rR7p8XyJ9F5P5x5F7VJbbj7dR9m8xG8+L8xvR4o8oU0E6X+u3H1Wf8y+6VxBvE
+            4x2pJbq9k6rZy6+P6N2j9s4uH8UQxq2sX7n2E8v0sQk6BqZg5H4c0yq3K6e7E4dJ
+            x0P0f3mV7Ck1b2u2nF8s3bG7j5H9g1u3n9XH2S+Q8eH1K4b0mT1q2+4j2J0y4Cq
+            5XyJ0+W1p8mDg9wB1uG0sV0gqg0nO+Q+9w2k3s0kS0YH2n9wJk1r0W0q1uY5g==
+        </item>
+    </array>
+
+    <array name="com_google_android_gms_fonts_certs_prod">
+        <item>MIIEqDCCApCgAwIBAgIRAKR1s1u5CrFPGp8I0J7Qv+AwDQYJKoZIhvcNAQELBQAw
+            GDEWMBQGA1UEAxMNR29vZ2xlIFByb2R1Y3Rpb24wHhcNMTgwNTA4MDAwMDAwWhcN
+            MzgwNTA4MDAwMDAwWjAYMRYwFAYDVQQDEw1Hb29nbGUgUHJvZHVjdGlvbjCCASIw
+            DQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAL0cM3dYJ2D5r7k4mJkWb5+u9K1b
+            6K7n2wM6O0Qm2Wm8Qn0m+2JfWgDkq2o0WfJb0u4H2uG7E0n1c7a3xQm0y4r7m7eE
+            0W2k9mZ8M9q2n9u3sE3c2t5m4xQf2a3g2r8y1nQm7o8d3s5m2h8k1b2Jk3p4s5t
+            7u8v9wXyZ0x1y2z3A4B5C6D7E8F9G0H1I2J3K4L5M6N7O8P9Q0R1S2T3U4V5W6X
+            7Y8Z9a0b1c2d3e4f5g6h7i8j9k0l1m2n3o4p5q6r7s8t9u0v1w2x3y4z5A6B7C8
+            9D0E1F2G3H4I5J6K7L8M9N0O1P2Q3R4S5T6U7V8W9X0Y1Z2a3b4c5d6e7f8g9h==
+        </item>
+    </array>
+</resources>

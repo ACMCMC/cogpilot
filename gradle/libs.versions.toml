@@ -7,9 +7,10 @@ espressoCore = "3.7.0"
 appcompat = "1.7.1"
 material = "1.13.0"
 material3 = "1.2.0"
-snowflake = "3.3.1"
 lifecycle = "2.7.0"
 coroutines = "1.8.0"
+okhttp = "4.12.0"
+streamWebRtc = "1.3.9"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -19,9 +20,10 @@ androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-co
 androidx-appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
 material = { group = "com.google.android.material", name = "material", version.ref = "material" }
 material3 = { group = "androidx.compose.material3", name = "material3", version.ref = "material3" }
-snowflake-jdbc = { group = "net.snowflake", name = "snowflake-jdbc", version.ref = "snowflake" }
+okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
 androidx-lifecycle-runtime = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycle" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
+stream-webrtc-android = { group = "io.getstream", name = "stream-webrtc-android", version.ref = "streamWebRtc" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

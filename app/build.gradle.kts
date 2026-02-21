@@ -46,8 +46,7 @@ android {
 
         // Build config fields from environment variables
         buildConfigField("String", "SNOWFLAKE_ACCOUNT", "\"${getEnvOrProperty("SNOWFLAKE_ACCOUNT")}\"")
-        buildConfigField("String", "SNOWFLAKE_USER", "\"${getEnvOrProperty("SNOWFLAKE_USER")}\"")
-        buildConfigField("String", "SNOWFLAKE_PASSWORD", "\"${getEnvOrProperty("SNOWFLAKE_PASSWORD")}\"")
+        buildConfigField("String", "SNOWFLAKE_PAT_TOKEN", "\"${getEnvOrProperty("SNOWFLAKE_PAT_TOKEN")}\"")
         buildConfigField("String", "SNOWFLAKE_WAREHOUSE", "\"${getEnvOrProperty("SNOWFLAKE_WAREHOUSE", "COMPUTE_WH")}\"")
         buildConfigField("String", "SNOWFLAKE_DATABASE", "\"${getEnvOrProperty("SNOWFLAKE_DATABASE", "COGPILOT_DB")}\"")
         buildConfigField("String", "SNOWFLAKE_SCHEMA", "\"${getEnvOrProperty("SNOWFLAKE_SCHEMA", "PUBLIC")}\"")
@@ -80,9 +79,10 @@ dependencies {
     implementation(libs.androidx.appcompat)
     implementation(libs.material)
     implementation(libs.material3)
-    implementation(libs.snowflake.jdbc)
+    implementation(libs.okhttp)
     implementation(libs.androidx.lifecycle.runtime)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.stream.webrtc.android)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

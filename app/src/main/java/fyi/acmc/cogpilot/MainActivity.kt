@@ -2,6 +2,7 @@ package fyi.acmc.cogpilot
 
 import android.Manifest
 import android.app.UiModeManager
+import android.content.Intent
 import android.content.res.Configuration
 import android.os.Bundle
 import android.os.Handler
@@ -30,7 +31,7 @@ class MainActivity : AppCompatActivity() {
     private val locationCapture by lazy { LocationCapture(this) }
     private val snowflakeManager = SnowflakeManager()
     private val riskScorer = RiskScorer()
-    private val elevenLabsManager = ElevenLabsManager()
+    private val elevenLabsManager by lazy { ElevenLabsManager(this) }
     private val handler = Handler(Looper.getMainLooper())
     private var isDrivingMode = false
     private var voiceActive = false
@@ -49,6 +50,24 @@ class MainActivity : AppCompatActivity() {
             onVoiceToggle()
         }
         setContentView(uiManager.createUI())
+        
+        // Setup ElevenLabs session callbacks
+        elevenLabsManager.onSessionStateChange = { state ->
+            Log.d("CogPilot", "ElevenLabs session state: $state")
+            if (state.startsWith("connection_")) {
+                val isConnected = state.contains("CONNECTED")
+                if (!isConnected) {
+                    voiceActive = false
+                    uiManager.setVoiceState(false)
+                }
+            }
+        }
+        elevenLabsManager.onSessionError = { error ->
+            Log.e("CogPilot", "ElevenLabs session error: $error")
+            voiceActive = false
+            uiManager.setVoiceState(false)
+            uiManager.setConnectionStatus("Voice error: $error", "#FF6B6B")
+        }
         
         if (isDrivingMode) {
             Log.i("CogPilot", "✅ DRIVING MODE DETECTED - Full interactive support enabled")
@@ -89,21 +108,36 @@ class MainActivity : AppCompatActivity() {
         if (voiceActive) {
             Log.i("CogPilot", "🎙️ Voice session starting")
             uiManager.setVoiceState(true)
+            // start foreground service for background microphone access
+            startService(Intent(this, AudioCaptureService::class.java))
             lifecycleScope.launch {
                 val token = elevenLabsManager.getWebrtcToken("driver")
                 if (token.isNullOrBlank()) {
                     Log.e("CogPilot", "ElevenLabs token failed")
                     voiceActive = false
                     uiManager.setVoiceState(false)
+                    stopService(Intent(this@MainActivity, AudioCaptureService::class.java))
                 } else {
-                    Log.i("CogPilot", "ElevenLabs token ok, ready for WebRTC")
-                    // TODO: start WebRTC session using token
+                    Log.i("CogPilot", "ElevenLabs token ok, starting WebRTC session")
+                    val sessionStarted = elevenLabsManager.startSession(token)
+                    if (sessionStarted) {
+                        Log.i("CogPilot", "✓ WebRTC session active and ready")
+                    } else {
+                        Log.e("CogPilot", "Failed to start WebRTC session")
+                        voiceActive = false
+                        uiManager.setVoiceState(false)
+                        stopService(Intent(this@MainActivity, AudioCaptureService::class.java))
+                    }
                 }
             }
         } else {
             Log.i("CogPilot", "🛑 Voice session stopping")
             uiManager.setVoiceState(false)
-            // TODO: stop ElevenLabs WebRTC session here
+            // stop foreground service
+            stopService(Intent(this, AudioCaptureService::class.java))
+            lifecycleScope.launch {
+                elevenLabsManager.stopSession()
+            }
         }
     }
 
@@ -186,6 +220,14 @@ class MainActivity : AppCompatActivity() {
         locationCapture.stopCapture()
         snowflakeManager.close()
         handler.removeCallbacksAndMessages(null)
+        // cleanup voice session
+        if (voiceActive) {
+            lifecycleScope.launch {
+                elevenLabsManager.stopSession()
+            }
+        }
+        // stop audio capture service
+        stopService(Intent(this, AudioCaptureService::class.java))
     }
 }
 
@@ -250,19 +292,19 @@ class UIManager(private val activity: AppCompatActivity) {
         val title = TextView(activity).apply {
             text = "CogPilot"
             textSize = 34f
-            setTextColor(android.graphics.Color.parseColor("#D5FF8A"))
-            typeface = Typeface.create("serif", Typeface.BOLD)
+            setTextColor(android.graphics.Color.parseColor("#C200D6"))
+            typeface = Typeface.SANS_SERIF
         }
 
         val subtitle = TextView(activity).apply {
             text = "Attention companion, parked UI"
             textSize = 12f
-            setTextColor(android.graphics.Color.parseColor("#A4B4C2"))
+            setTextColor(android.graphics.Color.parseColor("#8EA3B5"))
             setPadding(0, 6, 0, 0)
-            typeface = Typeface.create("monospace", Typeface.NORMAL)
+            typeface = Typeface.SANS_SERIF
         }
 
-        val pill = createPill("PARKED MODE", "#1D2A33", "#9ED8FF")
+        val pill = createPill("PARKED MODE", "#002D72", "#00FFFF")
 
         header.addView(title)
         header.addView(subtitle)
@@ -271,7 +313,7 @@ class UIManager(private val activity: AppCompatActivity) {
     }
 
     private fun createStatusCard(): com.google.android.material.card.MaterialCardView {
-        val card = createCard(android.graphics.Color.parseColor("#0D2C22"), 22f, "#1B8F6A")
+        val card = createCard(android.graphics.Color.parseColor("#0B0F14"), 22f, "#003CFF")
 
         val content = android.widget.LinearLayout(activity).apply {
             orientation = android.widget.LinearLayout.VERTICAL
@@ -281,15 +323,16 @@ class UIManager(private val activity: AppCompatActivity) {
         statusTitle = TextView(activity).apply {
             text = "Initializing..."
             textSize = 24f
-            setTextColor(android.graphics.Color.parseColor("#BDF4DA"))
-            typeface = Typeface.create("serif", Typeface.BOLD)
+            setTextColor(android.graphics.Color.parseColor("#00FFFF"))
+            typeface = Typeface.SANS_SERIF
         }
 
         statusSubtitle = TextView(activity).apply {
             text = "Connecting..."
             textSize = 13f
-            setTextColor(android.graphics.Color.parseColor("#8BD3B5"))
+            setTextColor(android.graphics.Color.parseColor("#00B8CC"))
             setPadding(0, 8, 0, 0)
+            typeface = Typeface.SANS_SERIF
         }
 
         content.addView(statusTitle)
@@ -299,7 +342,7 @@ class UIManager(private val activity: AppCompatActivity) {
     }
 
     private fun createVoiceControlCard(): com.google.android.material.card.MaterialCardView {
-        val card = createCard(android.graphics.Color.parseColor("#101820"), 14f, "#263241")
+        val card = createCard(android.graphics.Color.parseColor("#0B0F14"), 14f, "#5A00FF")
         val content = android.widget.LinearLayout(activity).apply {
             orientation = android.widget.LinearLayout.VERTICAL
             setPadding(18, 14, 18, 14)
@@ -308,8 +351,8 @@ class UIManager(private val activity: AppCompatActivity) {
         val label = TextView(activity).apply {
             text = "Voice loop"
             textSize = 12f
-            setTextColor(android.graphics.Color.parseColor("#8EA3B5"))
-            typeface = Typeface.create("monospace", Typeface.NORMAL)
+            setTextColor(android.graphics.Color.parseColor("#00B8CC"))
+            typeface = Typeface.SANS_SERIF
         }
 
         voiceButton = MaterialButton(activity).apply {
@@ -324,8 +367,9 @@ class UIManager(private val activity: AppCompatActivity) {
         val hint = TextView(activity).apply {
             text = "Low latency: WebRTC, Scribe v2"
             textSize = 11f
-            setTextColor(android.graphics.Color.parseColor("#6F8395"))
+            setTextColor(android.graphics.Color.parseColor("#8EA3B5"))
             setPadding(0, 8, 0, 0)
+            typeface = Typeface.SANS_SERIF
         }
 
         content.addView(label)
@@ -344,8 +388,8 @@ class UIManager(private val activity: AppCompatActivity) {
         val label = TextView(activity).apply {
             text = "Attention meter"
             textSize = 14f
-            setTextColor(android.graphics.Color.parseColor("#A8B7C4"))
-            typeface = Typeface.create("monospace", Typeface.NORMAL)
+            setTextColor(android.graphics.Color.parseColor("#00B8CC"))
+            typeface = Typeface.SANS_SERIF
         }
 
         riskGauge = android.widget.ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal).apply {
@@ -360,8 +404,8 @@ class UIManager(private val activity: AppCompatActivity) {
         riskText = TextView(activity).apply {
             text = "0.00 / 1.00 - SAFE"
             textSize = 16f
-            setTextColor(android.graphics.Color.parseColor("#9EF0B3"))
-            typeface = Typeface.create("serif", Typeface.BOLD)
+            setTextColor(android.graphics.Color.parseColor("#00FFFF"))
+            typeface = Typeface.SANS_SERIF
             gravity = android.view.Gravity.CENTER
             setPadding(0, 12, 0, 0)
         }
@@ -385,7 +429,7 @@ class UIManager(private val activity: AppCompatActivity) {
     }
 
     private fun createMetricCard(title: String, value: String, color: String): com.google.android.material.card.MaterialCardView {
-        val card = createCard(android.graphics.Color.parseColor("#0F1A22"), 8f, "#1F2B36")
+        val card = createCard(android.graphics.Color.parseColor("#0B0F14"), 8f, "#007ACC")
         card.layoutParams = android.widget.LinearLayout.LayoutParams(0, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
             marginStart = 8
             marginEnd = 8
@@ -400,14 +444,15 @@ class UIManager(private val activity: AppCompatActivity) {
             text = value
             textSize = 20f
             setTextColor(android.graphics.Color.parseColor(color))
-            typeface = Typeface.create("serif", Typeface.BOLD)
+            typeface = Typeface.SANS_SERIF
         }
 
         val label = TextView(activity).apply {
             text = title
             textSize = 12f
-            setTextColor(android.graphics.Color.parseColor("#95A6B7"))
+            setTextColor(android.graphics.Color.parseColor("#8EA3B5"))
             setPadding(0, 8, 0, 0)
+            typeface = Typeface.SANS_SERIF
         }
 
         content.addView(valueText)
@@ -423,14 +468,15 @@ class UIManager(private val activity: AppCompatActivity) {
     }
 
     private fun createInterventionCard(): com.google.android.material.card.MaterialCardView {
-        interventionCard = createCard(android.graphics.Color.parseColor("#1E1A10"), 18f, "#3B2C12")
+        interventionCard = createCard(android.graphics.Color.parseColor("#0B0F14"), 18f, "#FF00FF")
         interventionCard.visibility = android.view.View.GONE
 
         interventionText = TextView(activity).apply {
             text = ""
             textSize = 16f
-            setTextColor(android.graphics.Color.parseColor("#FFD27A"))
+            setTextColor(android.graphics.Color.parseColor("#FF00FF"))
             setPadding(20, 20, 20, 20)
+            typeface = Typeface.SANS_SERIF
         }
 
         interventionCard.addView(interventionText)
@@ -438,7 +484,7 @@ class UIManager(private val activity: AppCompatActivity) {
     }
 
     private fun createDetailsCard(): com.google.android.material.card.MaterialCardView {
-        val card = createCard(android.graphics.Color.parseColor("#0F141A"), 14f, "#1E2A36")
+        val card = createCard(android.graphics.Color.parseColor("#0B0F14"), 14f, "#003CFF")
         val content = android.widget.LinearLayout(activity).apply {
             orientation = android.widget.LinearLayout.VERTICAL
             setPadding(18, 18, 18, 18)
@@ -447,7 +493,8 @@ class UIManager(private val activity: AppCompatActivity) {
         metricsText = TextView(activity).apply {
             text = "Monotony: 0.00\nTime: 0.00\nComplexity: 0.00"
             textSize = 14f
-            setTextColor(android.graphics.Color.parseColor("#8FA2B3"))
+            setTextColor(android.graphics.Color.parseColor("#8EA3B5"))
+            typeface = Typeface.SANS_SERIF
         }
 
         content.addView(metricsText)
@@ -483,7 +530,7 @@ class UIManager(private val activity: AppCompatActivity) {
             this.text = text
             textSize = 10f
             setTextColor(android.graphics.Color.parseColor(fg))
-            typeface = Typeface.create("monospace", Typeface.BOLD)
+            typeface = Typeface.SANS_SERIF
         }
 
         pill.addView(t)

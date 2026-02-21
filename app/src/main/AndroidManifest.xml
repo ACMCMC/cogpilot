@@ -8,11 +8,7 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    
-    <!-- Car-specific permissions -->
-    <uses-permission android:name="android.car.permission.READ_CAR_DRIVING_STATE" />
-    <uses-permission android:name="android.car.permission.CAR_CONTROL_PLAYBACK" />
-    <uses-permission android:name="android.permission.CHANGE_UI_MODE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
 
     <application
         android:allowBackup="true"
@@ -46,6 +42,12 @@
                 <action android:name="fyi.acmc.cogpilot.action.TRIGGER_VOICE" />
             </intent-filter>
         </receiver>
+
+        <!-- Foreground service for background microphone access -->
+        <service
+            android:name=".AudioCaptureService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
 
     </application>
 

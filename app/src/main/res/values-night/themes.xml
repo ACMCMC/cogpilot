@@ -1,16 +1,18 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <!-- Base application theme. -->
-    <style name="Theme.CogPilot" parent="Theme.MaterialComponents.DayNight.DarkActionBar">
-        <!-- Primary brand color. -->
-        <item name="colorPrimary">@color/purple_200</item>
-        <item name="colorPrimaryVariant">@color/purple_700</item>
-        <item name="colorOnPrimary">@color/black</item>
-        <!-- Secondary brand color. -->
-        <item name="colorSecondary">@color/teal_200</item>
-        <item name="colorSecondaryVariant">@color/teal_200</item>
+    <style name="Theme.CogPilot" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/primary_purple_cyber</item>
+        <item name="colorOnPrimary">@color/white</item>
+        <item name="colorPrimaryContainer">@color/primary_blue_deep</item>
+        <item name="colorOnPrimaryContainer">@color/white</item>
+        <item name="colorSecondary">@color/primary_aqua_bright</item>
         <item name="colorOnSecondary">@color/black</item>
-        <!-- Status bar color. -->
-        <item name="android:statusBarColor">?attr/colorPrimaryVariant</item>
-        <!-- Customize your theme here. -->
+        <item name="colorTertiary">@color/primary_blue_medium</item>
+        <item name="colorOnTertiary">@color/white</item>
+        <item name="colorError">@color/primary_red_optimistic</item>
+        <item name="colorOnError">@color/white</item>
+        <item name="android:colorBackground">#0B0F14</item>
+        <item name="colorOnBackground">@color/white</item>
+        <item name="android:statusBarColor">@color/primary_blue_deep</item>
+        <item name="android:navigationBarColor">@color/primary_blue_deep</item>
     </style>
 </resources>
