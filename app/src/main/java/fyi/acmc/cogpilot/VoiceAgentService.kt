@@ -4,25 +4,24 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
-import android.content.BroadcastReceiver
-import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.os.Binder
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import io.elevenlabs.ConversationClient
+import io.elevenlabs.ConversationConfig
+import io.elevenlabs.ConversationSession
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.cancel
 
 /**
- * VoiceAgentService: Background service managing ElevenLabs conversation
- * Triggers: button click, voice command, shortcut, attention drop detection
- * Manages mic, audio, and conversation lifecycle
+ * VoiceAgentService: Background service managing ElevenLabs voice agent
+ * Uses official ConversationClient SDK which handles all WebRTC + audio
  */
 class VoiceAgentService : Service() {
 
@@ -37,7 +36,7 @@ class VoiceAgentService : Service() {
     }
 
     private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
-    private lateinit var conversationManager: ElevenLabsConversationManager
+    private var session: ConversationSession? = null
     private var isRunning = false
 
     inner class VoiceAgentBinder : Binder() {
@@ -46,16 +45,14 @@ class VoiceAgentService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        Log.i(TAG, "Service created")
-        conversationManager = ElevenLabsConversationManager(this)
-        setupCallbacks()
+        Log.i(TAG, "✓ Service created")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.i(TAG, "onStartCommand: ${intent?.action}")
         
         createNotificationChannel()
-        val notification = createNotification("Initializing...")
+        val notification = createNotification("Initializing voice agent...")
         startForeground(NOTIFICATION_ID, notification)
 
         when (intent?.action) {
@@ -67,85 +64,93 @@ class VoiceAgentService : Service() {
         return START_STICKY
     }
 
-    private fun setupCallbacks() {
-        conversationManager.onConnect = { conversationId ->
-            Log.i(TAG, "✓ Connected: $conversationId")
-            updateNotification("🎙️ Listening...")
-            broadcastStatus("connected")
-        }
-
-        conversationManager.onStatusChange = { status ->
-            Log.i(TAG, "Status: $status")
-            val notifText = when (status) {
-                "connected" -> "🎙️ Listening..."
-                "disconnected" -> "Voice session ended"
-                else -> "Connecting..."
-            }
-            updateNotification(notifText)
-            broadcastStatus(status)
-
-            if (status == "disconnected") {
-                isRunning = false
-                stopSelf()
-            }
-        }
-
-        conversationManager.onModeChange = { mode ->
-            Log.d(TAG, "Mode: $mode")
-            val notifText = when (mode) {
-                "speaking" -> "🤖 Agent speaking..."
-                "listening" -> "🎙️ Listening..."
-                else -> mode
-            }
-            updateNotification(notifText)
-        }
-
-        conversationManager.onVadScore = { score ->
-            // Log VAD score for debugging; could trigger UI feedback
-            if (score > 0.5f) {
-                Log.d(TAG, "Voice detected: $score")
-            }
-        }
-
-        conversationManager.onError = { error ->
-            Log.e(TAG, "Conversation error: $error")
-            updateNotification("❌ Error: $error")
-            broadcastStatus("error")
-            stopSelf()
-        }
-    }
-
     private fun startVoiceSession() {
         if (isRunning) {
             Log.w(TAG, "Already running")
             return
         }
 
-        Log.i(TAG, "Starting voice session...")
+        Log.i(TAG, "🎙️ Starting voice agent with official SDK...")
         isRunning = true
 
         serviceScope.launch {
             try {
-                val success = conversationManager.startConversation(
+                // setup callbacks for the official SDK
+                val config = ConversationConfig(
                     agentId = BuildConfig.ELEVENLABS_AGENT_ID,
-                    userId = "driver"
+                    userId = "driver",
+                    onConnect = { conversationId ->
+                        Log.i(TAG, "✓ Connected: $conversationId")
+                        updateNotification("🎙️ Listening...")
+                        broadcastStatus("connected")
+                    },
+                    onStatusChange = { status ->
+                        Log.d(TAG, "Status: $status")
+                        val statusStr = status.toString().lowercase()
+                        
+                        val notifText = when {
+                            statusStr.contains("connected") -> "🎙️ Listening..."
+                            statusStr.contains("disconnected") -> "Voice ended"
+                            else -> "Connecting..."
+                        }
+                        updateNotification(notifText)
+                        broadcastStatus(statusStr)
+
+                        if (statusStr.contains("disconnected")) {
+                            isRunning = false
+                            stopSelf()
+                        }
+                    },
+                    onModeChange = { mode ->
+                        Log.d(TAG, "Mode: $mode")
+                        val notifText = when {
+                            mode.toString().lowercase().contains("speaking") -> "🤖 Agent speaking..."
+                            mode.toString().lowercase().contains("listening") -> "🎙️ Listening..."
+                            else -> mode.toString()
+                        }
+                        updateNotification(notifText)
+                    },
+                    onVadScore = { score ->
+                        // voice activity detection
+                        if (score > 0.5f) {
+                            Log.d(TAG, "Voice detected: $score")
+                        }
+                    },
+                    onMessage = { source, messageJson ->
+                        Log.d(TAG, "Message from $source: ${messageJson.take(100)}")
+                    },
+                    onUnhandledClientToolCall = { call ->
+                        Log.w(TAG, "Unhandled tool call: $call")
+                    },
+                    // register device tools that agent can call
+                    clientTools = mapOf()
                 )
-                if (!success) {
-                    Log.e(TAG, "Failed to start conversation")
-                    stopSelf()
-                }
+
+                // start the conversation - official SDK handles everything
+                session = ConversationClient.startSession(config, this@VoiceAgentService)
+                Log.i(TAG, "✓ Official SDK conversation started")
+                
             } catch (e: Exception) {
-                Log.e(TAG, "Start error: ${e.message}", e)
+                Log.e(TAG, "Failed to start: ${e.message}", e)
+                updateNotification("❌ Error: ${e.message}")
+                isRunning = false
                 stopSelf()
             }
         }
     }
 
     private fun stopVoiceSession() {
-        Log.i(TAG, "Stopping voice session...")
+        Log.i(TAG, "🛑 Stopping voice session...")
         isRunning = false
-        conversationManager.stopConversation()
-        stopSelf()
+        serviceScope.launch {
+            try {
+                session?.endSession()
+                session = null
+            } catch (e: Exception) {
+                Log.e(TAG, "Stop error: ${e.message}")
+            }
+            stopSelf()
+        }
     }
 
     private fun createNotificationChannel() {
@@ -155,7 +160,7 @@ class VoiceAgentService : Service() {
                 "Voice Agent",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Real-time voice conversation with AI agent"
+                description = "Real-time voice interaction with AI agent"
                 setShowBadge(false)
             }
             val manager = getSystemService(NotificationManager::class.java)
@@ -189,7 +194,14 @@ class VoiceAgentService : Service() {
 
     override fun onDestroy() {
         Log.i(TAG, "Service destroyed")
-        conversationManager.dispose()
+        serviceScope.launch {
+            try {
+                session?.endSession()
+                session = null
+            } catch (e: Exception) {
+                Log.e(TAG, "Cleanup error: ${e.message}")
+            }
+        }
         serviceScope.cancel()
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
@@ -197,3 +209,4 @@ class VoiceAgentService : Service() {
 
     override fun onBind(intent: Intent?): IBinder = VoiceAgentBinder()
 }
+
