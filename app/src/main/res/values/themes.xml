@@ -1,0 +1,18 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <style name="Theme.CogPilot" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">#4CAF50</item>
+        <item name="colorOnPrimary">@color/white</item>
+        <item name="colorPrimaryContainer">#1B5E20</item>
+        <item name="colorOnPrimaryContainer">#B3E5FC</item>
+        <item name="colorSecondary">#FF6F00</item>
+        <item name="colorOnSecondary">@color/white</item>
+        <item name="colorTertiary">#00ACC1</item>
+        <item name="colorOnTertiary">@color/white</item>
+        <item name="colorError">#FF6B6B</item>
+        <item name="colorOnError">@color/white</item>
+        <item name="android:colorBackground">#121212</item>
+        <item name="colorOnBackground">@color/white</item>
+        <item name="android:statusBarColor">?attr/colorPrimary</item>
+        <item name="android:navigationBarColor">@android:color/black</item>
+    </style>
+</resources>

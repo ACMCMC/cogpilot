@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="primary_purple_cyber">#C200D6</color>
+    <color name="primary_red_optimistic">#D50000</color>
+    <color name="primary_aqua_bright">#00B8CC</color>
+    <color name="primary_blue_medium">#007ACC</color>
+    <color name="primary_blue_deep">#002D72</color>
+
+    <color name="accent_magenta_neon">#FF00FF</color>
+    <color name="accent_electric_violet">#5A00FF</color>
+    <color name="accent_laser_cyan">#00FFFF</color>
+    <color name="accent_hyper_blue">#003CFF</color>
+
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+</resources>
