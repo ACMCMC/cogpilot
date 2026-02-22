@@ -83,7 +83,6 @@ class LocationCapture(private val context: Context) {
                                 android.util.Log.d("LocationCapture", "Road context: placeId=${roadCtx.placeId}, types=${roadCtx.types}")
                                 val roadType = roadCtx.types.firstOrNull()
                                 val roadTypesStr = if (roadCtx.types.isNotEmpty()) roadCtx.types.joinToString(",") else null
-                                val speedOver = roadCtx.speedLimitMph?.let { limit -> speed - limit }
 
                                 it.insertTelemetry(
                                     timestamp = System.currentTimeMillis(),
@@ -94,10 +93,7 @@ class LocationCapture(private val context: Context) {
                                     roadPlaceId = roadCtx.placeId,
                                     roadTypes = roadTypesStr,
                                     roadType = roadType,
-                                    speedLimit = roadCtx.speedLimitMph,
-                                    speedUnit = roadCtx.speedUnit,
-                                    trafficRatio = roadCtx.trafficRatio,
-                                    speedOverLimit = speedOver
+                                    trafficRatio = roadCtx.trafficRatio
                                 )
 
                                 debugCallback?.invoke(speed, heading, roadCtx, location.latitude, location.longitude)

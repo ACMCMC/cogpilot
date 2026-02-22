@@ -42,6 +42,7 @@ class MainActivity : AppCompatActivity() {
     // Live driving state — updated by location callback, passed to agent on trigger
     private var lastRoadContext: RoadContext? = null
     private var lastSpeedMph: Float = 0f
+    private var carSpeedMph: Float? = null
     private var tripStartMs: Long = System.currentTimeMillis()  // reset when session starts
 
     private lateinit var uiManager: UIManager
@@ -73,6 +74,15 @@ class MainActivity : AppCompatActivity() {
         )
         val rootView = uiManager.createUI()
         setContentView(rootView)
+        
+        // Ensure Spotify is authorized while in the foreground
+        lifecycleScope.launch(kotlinx.coroutines.Dispatchers.Main) {
+            try {
+                SpotifyManager(this@MainActivity).authorize()
+            } catch (e: Exception) {
+                Log.e("CogPilot", "Spotify auth trigger failed: ${e.message}")
+            }
+        }
         // Make content respect the status bar and navigation bar heights.
         // The scroll view background fills edge-to-edge; the padding keeps content visible.
         androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(rootView) { v, insets ->
@@ -173,13 +183,13 @@ class MainActivity : AppCompatActivity() {
             Log.i("CogPilot", "🎙️ Voice session starting via button")
             uiManager.setVoiceState(true)
             val rc = lastRoadContext
+            val activeSpeedMph = carSpeedMph ?: lastSpeedMph
             VoiceAgentTrigger.start(
                 this,
                 driverId      = currentUserId,
                 source        = "button_click",
-                speedMph      = lastSpeedMph.takeIf { it > 0 },
+                speedMph      = activeSpeedMph.takeIf { it > 0 },
                 roadTypes     = rc?.types?.joinToString(",")?.ifBlank { null },
-                speedLimitMph = rc?.speedLimitMph,
                 trafficRatio  = rc?.trafficRatio,
                 tripStartMs   = tripStartMs
             )
@@ -202,7 +212,34 @@ class MainActivity : AppCompatActivity() {
     private fun detectDrivingMode() {
         try {
             val uiModeManager = getSystemService(UI_MODE_SERVICE) as UiModeManager
-            isDrivingMode = uiModeManager.currentModeType == Configuration.UI_MODE_TYPE_CAR
+            val newIsDrivingMode = uiModeManager.currentModeType == Configuration.UI_MODE_TYPE_CAR
+            
+            // Check for transition from parking (false) to driving (true)
+            if (newIsDrivingMode && !isDrivingMode) {
+                Log.i("CogPilot", "🚗 Switched to driving mode, proactively checking in with driver.")
+                if (!voiceActive) {
+                    val now = System.currentTimeMillis()
+                    // Don't auto-trigger if we just started the app in driving mode right away 
+                    // (unless we want to, but the intent here is a transition). Wait, the user said "whenever the driving mode changes".
+                    // Let's just trigger it anyway on start if they are in car, since it's friendly.
+                    lastAutoTriggerTime = now
+                    val rc = lastRoadContext
+                    val activeSpeedMph = carSpeedMph ?: lastSpeedMph
+                    VoiceAgentTrigger.start(
+                        this@MainActivity,
+                        driverId      = currentUserId,
+                        source        = "driving_started",
+                        speedMph      = activeSpeedMph.takeIf { it > 0 },
+                        roadTypes     = rc?.types?.joinToString(",")?.ifBlank { null },
+                        trafficRatio  = rc?.trafficRatio,
+                        tripStartMs   = tripStartMs
+                    )
+                    voiceActive = true
+                    uiManager.setVoiceState(true)
+                }
+            }
+            
+            isDrivingMode = newIsDrivingMode
             Log.d("CogPilot", "UI Mode detected: ${if (isDrivingMode) "CAR" else "NORMAL"}")
         } catch (e: Exception) {
             Log.d("CogPilot", "UiModeManager not available: ${e.message}")
@@ -230,25 +267,38 @@ class MainActivity : AppCompatActivity() {
                                 riskScorer.recordIntervention()
                             } else if (riskData.riskScore < 0.4f) {
                                 uiManager.hideIntervention()
-                            } else if (riskData.riskScore > 0.5f && !voiceActive) {
-                                // auto-trigger voice agent when attention predicted to drop (proactive engagement)
+                            } else {
                                 val now = System.currentTimeMillis()
-                                if (now - lastAutoTriggerTime > 30000) { // min 30s between auto-triggers
-                                    Log.i("CogPilot", "📢 Auto-triggering voice agent - attention dropping (risk: ${riskData.riskScore})")
-                                    lastAutoTriggerTime = now
+                                if (!voiceActive && now - lastAutoTriggerTime > 30000) {
                                     val rc = lastRoadContext
-                                    VoiceAgentTrigger.start(
-                                        this@MainActivity,
-                                        driverId      = currentUserId,
-                                        source        = "attention_drop",
-                                        speedMph      = lastSpeedMph.takeIf { it > 0 },
-                                        roadTypes     = rc?.types?.joinToString(",")?.ifBlank { null },
-                                        speedLimitMph = rc?.speedLimitMph,
-                                        trafficRatio  = rc?.trafficRatio,
-                                        tripStartMs   = tripStartMs
-                                    )
-                                    voiceActive = true
-                                    uiManager.setVoiceState(true)
+                                    val timeOfDay = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+                                    val driveMins = ((now - tripStartMs) / 60000).toInt()
+                                    
+                                    var triggerSource: String? = null
+                                    if (rc?.trafficRatio != null && rc.trafficRatio > 1.5f) {
+                                        triggerSource = "sudden_heavy_traffic"
+                                    } else if (driveMins > 45 && (timeOfDay >= 23 || timeOfDay <= 5)) {
+                                        triggerSource = "late_night_fatigue"
+                                    } else if (riskData.riskScore > 0.5f) {
+                                        triggerSource = "attention_drop"
+                                    }
+                                    
+                                    if (triggerSource != null) {
+                                        Log.i("CogPilot", "📢 Auto-triggering voice agent - trigger=$triggerSource (risk: ${riskData.riskScore})")
+                                        lastAutoTriggerTime = now
+                                        val activeSpeedMph = carSpeedMph ?: lastSpeedMph
+                                        VoiceAgentTrigger.start(
+                                            this@MainActivity,
+                                            driverId      = currentUserId,
+                                            source        = triggerSource,
+                                            speedMph      = activeSpeedMph.takeIf { it > 0 },
+                                            roadTypes     = rc?.types?.joinToString(",")?.ifBlank { null },
+                                            trafficRatio  = rc?.trafficRatio,
+                                            tripStartMs   = tripStartMs
+                                        )
+                                        voiceActive = true
+                                        uiManager.setVoiceState(true)
+                                    }
                                 }
                             }
                         } else {
@@ -843,7 +893,6 @@ class UIManager(
     ) {
         val placeId = roadCtx.placeId ?: "-"
         val types = if (roadCtx.types.isNotEmpty()) roadCtx.types.joinToString(",") else "-"
-        val speedLimit = roadCtx.speedLimitMph?.let { "%.1f mph".format(it) } ?: "-"
         val traffic = roadCtx.trafficRatio?.let { "%.2f".format(it) } ?: "-"
         
         debugText.text = """speed: %.1f mph | heading: %.0f°
@@ -851,7 +900,7 @@ location: %.5f, %.5f
 risk: %.2f | voice: %s
 road place_id: %s
 road types: %s
-speed limit: %s | traffic: %s""".trimIndent().format(
+traffic: %s""".trimIndent().format(
             speed,
             heading,
             lat,
@@ -860,7 +909,6 @@ speed limit: %s | traffic: %s""".trimIndent().format(
             if (voiceActive) "active" else "idle",
             placeId,
             types,
-            speedLimit,
             traffic
         )
     }

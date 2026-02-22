@@ -35,10 +35,7 @@ class SnowflakeManager(
         roadPlaceId: String? = null,
         roadTypes: String? = null,
         roadType: String? = null,
-        speedLimit: Float? = null,
-        speedUnit: String? = null,
-        trafficRatio: Float? = null,
-        speedOverLimit: Float? = null
+        trafficRatio: Float? = null
     ) {
         withContext(Dispatchers.IO) {
             // tiny helper for safe SQL strings, keep it sloppy but valid

@@ -57,7 +57,6 @@ class RiskDecisionEngine(private val context: Context) {
 
     // Road context (from Google Maps)
     private var currentRoadType: RoadType = RoadType.MIXED
-    private var currentSpeedLimit: Float = 55f  // mph
     private var trafficCondition: TrafficCondition = TrafficCondition.MODERATE
 
     // Circadian state
@@ -352,10 +351,9 @@ class RiskDecisionEngine(private val context: Context) {
 
                 // Mock responses
                 currentRoadType = RoadType.HIGHWAY  // would come from Roads API
-                currentSpeedLimit = 65f  // would come from Speed Limits API
                 trafficCondition = TrafficCondition.MODERATE  // would come from Distance Matrix API
 
-                Log.d(TAG, "✓ Road metadata: $currentRoadType, limit=$currentSpeedLimit mph")
+                Log.d(TAG, "✓ Road metadata: $currentRoadType")
             } catch (e: Exception) {
                 Log.e(TAG, "Road metadata error: ${e.message}")
             }
@@ -400,7 +398,6 @@ class RiskDecisionEngine(private val context: Context) {
             responseLatencyMs = lastResponseLatencyMs,
             vadScore = lastVadScore,
             roadType = currentRoadType,
-            speedLimit = currentSpeedLimit,
             circadianWindow = circadianWindow,
             driverProfile = driverProfile?.name ?: "unknown",
             vocalEnergyTrend = calculateVocalEnergyTrend(),
@@ -507,7 +504,6 @@ data class RiskDebugInfo(
     val responseLatencyMs: Float,
     val vadScore: Float,
     val roadType: RoadType,
-    val speedLimit: Float,
     val circadianWindow: CircadianWindow,
     val driverProfile: String,
     val vocalEnergyTrend: Float,
