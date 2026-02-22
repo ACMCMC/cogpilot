@@ -30,6 +30,11 @@ class LocationCapture(private val context: Context) {
     private var debugCallback: ((speed: Float, heading: Float, roadCtx: RoadContext, lat: Double, lon: Double) -> Unit)? = null
     private var snowflakeManager: SnowflakeManager? = null
     private val mapsClient = MapsRoadsClient(context)
+    
+    // Rate limiting: only fetch new road context every 60 seconds to avoid quota overuse
+    private var lastMapsApiCallTimeMs = 0L
+    private var lastRoadContext: RoadContext? = null
+    private val MAPS_API_THROTTLE_MS = 60_000L  // 60 seconds
 
     fun startCapture(
         snowflakeManager: SnowflakeManager,
@@ -76,16 +81,30 @@ class LocationCapture(private val context: Context) {
                     snowflakeManager?.let {
                         (context as? androidx.appcompat.app.AppCompatActivity)?.lifecycleScope?.launch {
                             try {
-                                android.util.Log.d("LocationCapture", "Fetching road context for ${location.latitude}, ${location.longitude}")
-                                val roadCtx = withContext(Dispatchers.IO) {
-                                    mapsClient.getRoadContext(location.latitude, location.longitude)
+                                // Rate limiting: only fetch new road context every 60 seconds to avoid Maps API quota overuse
+                                val now = System.currentTimeMillis()
+                                val timeSinceLastCall = now - lastMapsApiCallTimeMs
+                                val roadCtx: RoadContext = if (timeSinceLastCall >= MAPS_API_THROTTLE_MS) {
+                                    android.util.Log.d("LocationCapture", "🗺️ Fetching new road context (throttled to 1/min)")
+                                    val fetchedCtx = withContext(Dispatchers.IO) {
+                                        mapsClient.getRoadContext(location.latitude, location.longitude)
+                                    }
+                                    lastMapsApiCallTimeMs = now
+                                    lastRoadContext = fetchedCtx
+                                    android.util.Log.d("LocationCapture", "Road context: placeId=${fetchedCtx.placeId}, types=${fetchedCtx.types}")
+                                    fetchedCtx
+                                } else {
+                                    // Use cached road context
+                                    val cached = lastRoadContext
+                                    android.util.Log.d("LocationCapture", "📍 Using cached road context (${(MAPS_API_THROTTLE_MS - timeSinceLastCall) / 1000}s until next refresh)")
+                                    cached ?: RoadContext(placeId = null, types = emptyList(), trafficRatio = null, fetchedAtMs = now)
                                 }
-                                android.util.Log.d("LocationCapture", "Road context: placeId=${roadCtx.placeId}, types=${roadCtx.types}")
+                                
                                 val roadType = roadCtx.types.firstOrNull()
                                 val roadTypesStr = if (roadCtx.types.isNotEmpty()) roadCtx.types.joinToString(",") else null
 
                                 it.insertTelemetry(
-                                    timestamp = System.currentTimeMillis(),
+                                    timestamp = now,
                                     speed = speed,
                                     heading = heading,
                                     lat = location.latitude,

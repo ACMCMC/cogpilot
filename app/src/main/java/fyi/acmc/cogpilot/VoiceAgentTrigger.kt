@@ -13,8 +13,13 @@ object VoiceAgentTrigger {
 
     private const val TAG = "VoiceAgentTrigger"
 
+    // Interaction type constants
+    const val INTERACTION_TYPE_START_DRIVE = "start_drive"
+    const val INTERACTION_TYPE_CHECK_IN = "check_in"
+    
     // Extra key constants shared between caller and service
     const val EXTRA_SOURCE        = "extra_source"
+    const val EXTRA_INTERACTION_TYPE = "extra_interaction_type"
     const val EXTRA_SPEED_MPH     = "extra_speed_mph"
     const val EXTRA_ROAD_TYPE     = "extra_road_type"
     const val EXTRA_ROAD_TYPES    = "extra_road_types"
@@ -27,6 +32,7 @@ object VoiceAgentTrigger {
         context: Context,
         driverId: String = "aldan_creo",
         source: String = "manual",
+        interactionType: String = INTERACTION_TYPE_CHECK_IN,
         speedMph: Float? = null,
         roadTypes: String? = null,
         trafficRatio: Float? = null,
@@ -34,11 +40,12 @@ object VoiceAgentTrigger {
         lat: Double? = null,
         lon: Double? = null
     ) {
-        Log.i(TAG, "Starting voice agent for user=$driverId triggered by: $source")
+        Log.i(TAG, "Starting voice agent for user=$driverId interaction=$interactionType triggered by: $source")
         val intent = Intent(context, VoiceAgentService::class.java).apply {
             action = VoiceAgentService.ACTION_START
             putExtra("EXTRA_USER_ID", driverId)
             putExtra(EXTRA_SOURCE, source)
+            putExtra(EXTRA_INTERACTION_TYPE, interactionType)
             speedMph?.let      { putExtra(EXTRA_SPEED_MPH,     it) }
             roadTypes?.let     { putExtra(EXTRA_ROAD_TYPES,    it) }
             trafficRatio?.let  { putExtra(EXTRA_TRAFFIC_RATIO, it) }

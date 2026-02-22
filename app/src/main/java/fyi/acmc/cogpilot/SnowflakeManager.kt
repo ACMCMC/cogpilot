@@ -9,9 +9,7 @@ import org.json.JSONObject
  * SnowflakeManager: Direct connection to Snowflake from Android.
  * Credentials from BuildConfig (environment variables).
  */
-class SnowflakeManager(
-    internal val sqlApi: SnowflakeSqlApiClient = SnowflakeSqlApiClient()
-) {
+class SnowflakeManager(private val sqlApi: SnowflakeSqlApiClient = SnowflakeSqlApiClient()) {
 
     suspend fun initConnection(): Boolean = withContext(Dispatchers.IO) {
         Log.i("SnowflakeManager", "Initializing Snowflake connection...")
@@ -35,7 +33,10 @@ class SnowflakeManager(
         roadPlaceId: String? = null,
         roadTypes: String? = null,
         roadType: String? = null,
-        trafficRatio: Float? = null
+        speedLimit: Float? = null,
+        speedUnit: String? = null,
+        trafficRatio: Float? = null,
+        speedOverLimit: Float? = null
     ) {
         withContext(Dispatchers.IO) {
             // tiny helper for safe SQL strings, keep it sloppy but valid
@@ -142,7 +143,7 @@ Return as a numbered list.""".trimIndent()
         val sql = "SELECT profile FROM USERS LIMIT 1"
         val result = sqlApi.execute(sql)
         val data = result.optJSONArray("data")
-        val profileJson = data?.optJSONArray(0)?.optString(0, "{}")
+        val profileJson = data?.optJSONArray(0)?.optString(0, "{}") ?: "{}"
         return try {
             val profile = JSONObject(profileJson)
             profile.optString("interests", "Cognitive Science, Music, Travel")

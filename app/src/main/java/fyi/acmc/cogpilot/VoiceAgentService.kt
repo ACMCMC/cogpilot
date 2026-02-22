@@ -4,9 +4,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
-import android.content.Context
 import android.content.Intent
-import android.media.MediaPlayer
 import android.os.Binder
 import android.os.IBinder
 import android.util.Log
@@ -15,15 +13,12 @@ import androidx.core.content.ContextCompat
 import io.elevenlabs.ConversationClient
 import io.elevenlabs.ConversationConfig
 import io.elevenlabs.ConversationSession
-import io.elevenlabs.Overrides
-import io.elevenlabs.AgentOverrides
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.async
-import kotlinx.coroutines.delay
+import org.json.JSONObject
 import io.elevenlabs.ClientTool
 import io.elevenlabs.ClientToolResult
 
@@ -43,36 +38,20 @@ class VoiceAgentService : Service() {
         const val EXTRA_STATUS = "status"
         const val ACTION_AI_LOG = "fyi.acmc.cogpilot.voice.AI_LOG"
         const val EXTRA_AI_MSG = "ai_msg"
-        const val EXTRA_MSG_SOURCE = "msg_source"
     }
 
     private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
     private var session: ConversationSession? = null
     private var isRunning = false
-    private var isStopping = false
+    private var interactionEnded = false  // Guard against double cleanup
     private val snowflakeManager = SnowflakeManager()
     private val calendarContext = CalendarContextProvider(this)
     private val spotifyManager by lazy { SpotifyManager(this) }
 
     // hold context updates until connected
-    private var pendingSystemContext: String? = null
-    private var pendingDrivingContext: String? = null
     private var pendingTopics: String? = null
     private var pendingEventSummary: String? = null
-
-    private var liveSpeedMph: Float? = null
-    private var liveLat: Float? = null
-    private var liveLon: Float? = null
-
-    private val locationReceiver = object : android.content.BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) {
-            if (intent.action == "fyi.acmc.cogpilot.voice.LOCATION_UPDATE") {
-                liveSpeedMph = intent.getFloatExtra("extra_speed_mph", -1f).takeIf { it >= 0 }
-                liveLat = intent.getFloatExtra("extra_lat", 0f).takeIf { it != 0f }
-                liveLon = intent.getFloatExtra("extra_lon", 0f).takeIf { it != 0f }
-            }
-        }
-    }
+    private var pendingStartMessage: String? = null
 
     inner class VoiceAgentBinder : Binder() {
         fun getService(): VoiceAgentService = this@VoiceAgentService
@@ -80,40 +59,16 @@ class VoiceAgentService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        val filter = android.content.IntentFilter("fyi.acmc.cogpilot.voice.LOCATION_UPDATE")
-        ContextCompat.registerReceiver(this, locationReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
         Log.i(TAG, "✓ Service created")
     }
 
     private var currentDriverId: String = "aldan_creo"
-    private var currentTriggerSource: String? = null
+    private var currentInteractionType: String = VoiceAgentTrigger.INTERACTION_TYPE_CHECK_IN
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.i(TAG, "onStartCommand: ${intent?.action}")
         intent?.getStringExtra("EXTRA_USER_ID")?.let { currentDriverId = it }
-        intent?.getStringExtra(VoiceAgentTrigger.EXTRA_SOURCE)?.let { currentTriggerSource = it }
-
-        // Capture driving context from caller (available at the moment the session is triggered)
-        if (intent?.action == ACTION_START) {
-            val speedMph     = if (intent.hasExtra(VoiceAgentTrigger.EXTRA_SPEED_MPH))     intent.getFloatExtra(VoiceAgentTrigger.EXTRA_SPEED_MPH,     -1f) else null
-            val roadTypes    = intent.getStringExtra(VoiceAgentTrigger.EXTRA_ROAD_TYPES)
-            val trafficRatio = if (intent.hasExtra(VoiceAgentTrigger.EXTRA_TRAFFIC_RATIO)) intent.getFloatExtra(VoiceAgentTrigger.EXTRA_TRAFFIC_RATIO, -1f) else null
-            val tripStartMs  = if (intent.hasExtra(VoiceAgentTrigger.EXTRA_TRIP_START_MS)) intent.getLongExtra(VoiceAgentTrigger.EXTRA_TRIP_START_MS,  -1L) else null
-
-            serviceScope.launch {
-                pendingDrivingContext = buildDrivingContextString(
-                    speedMph     = speedMph?.takeIf { it >= 0 },
-                    roadTypes    = roadTypes,
-                    trafficRatio = trafficRatio?.takeIf { it >= 0 },
-                    tripStartMs  = tripStartMs?.takeIf { it > 0 },
-                    spotify      = spotifyManager,
-                    maps         = MapsRoadsClient(this@VoiceAgentService),
-                    lat          = liveLat,
-                    lon          = liveLon
-                )
-                Log.d(TAG, "Queued driving context: $pendingDrivingContext")
-            }
-        } // <--- Added missing brace here
+        intent?.getStringExtra(VoiceAgentTrigger.EXTRA_INTERACTION_TYPE)?.let { currentInteractionType = it }
         
         when (intent?.action) {
             ACTION_START -> {
@@ -136,7 +91,7 @@ class VoiceAgentService : Service() {
         return START_STICKY
     }
 
-    fun startVoiceSession() {
+    private fun startVoiceSession() {
         if (isRunning) {
             Log.w(TAG, "Already running")
             return
@@ -144,91 +99,42 @@ class VoiceAgentService : Service() {
 
         Log.i(TAG, "🎙️ Starting voice agent with official SDK...")
         isRunning = true
+        interactionEnded = false  // Reset for new interaction
 
         serviceScope.launch {
             try {
-                // 1. Immediately start fading out Spotify and play the chime in parallel
-                val fadeJob = launch {
-                    spotifyManager.fadeOutAndPause(durationMs = 2000L) // faster 2-second fade for responsiveness
-                    try {
-                        val player = MediaPlayer.create(this@VoiceAgentService, R.raw.chime_in)
-                        player?.setOnCompletionListener { it.release() }
-                        player?.start()
-                        // wait a tiny bit for the chime sound to complete before yielding
-                        delay(800L)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Failed to play chime_in", e)
-                    }
-                }
-
-                // 2. Concurrently fetch all Heavy Context from Snowflake
-                val startMsgDeferred = async { snowflakeManager.generateStartMessage(1) }
-                val topicsDeferred = async { snowflakeManager.generateConversationTopics(driverId = 1) }
-                val profileDeferred = async { snowflakeManager.getUserProfileById(currentDriverId) }
-                val eventsDeferred = async { calendarContext.getUpcomingEvents(limit = 5, windowMinutes = 240) }
-
-                val startMsg = startMsgDeferred.await()
-                val topics = topicsDeferred.await()
-                val profile = profileDeferred.await()
-                val events = eventsDeferred.await()
+                // Fade out Spotify music before starting voice agent
+                Log.i(TAG, "🎵 Fading out Spotify music...")
+                spotifyManager.fadeOutAndPause(durationMs = 5000L)
                 
+                // Play intro chime after fade completes
+                Log.i(TAG, "🔔 Playing intro chime...")
+                playIntroChime()
+                
+                // gather context before starting the conversation
+                val startMsg = snowflakeManager.generateStartMessage(1)
+                val topics = snowflakeManager.generateConversationTopics(driverId = 1)
+                val profile = snowflakeManager.getUserProfileById(currentDriverId)
+                val events = calendarContext.getUpcomingEvents(limit = 5, windowMinutes = 240)
                 if (events.isNotEmpty()) {
                     snowflakeManager.insertCalendarEvents(driverId = 1, events = events)
                 }
-
-                // Ensure the fade/chime finishes before calling ElevenLabs to prevent overlap
-                fadeJob.join()
-
-                // 3. Build driver context to inject at conversation start.
-                // Use a readable display name (replace underscores with spaces, title-case).
-                val displayName = currentDriverId
-                    .replace('_', ' ')
-                    .split(' ')
-                    .joinToString(" ") { it.replaceFirstChar(Char::uppercaseChar) }
-                val systemContext = buildString {
-                    appendLine("[DRIVER CONTEXT - use this throughout the conversation]")
-                    appendLine("Name: $displayName")
-                    appendLine("Interests: ${profile["interests"]}")
-                    appendLine("Complexity preference: ${profile["complexity"]}")
-                    
-                    if (currentTriggerSource != null && currentTriggerSource != "manual" && currentTriggerSource != "button_click") {
-                        if (currentTriggerSource == "driving_started") {
-                            appendLine("IMPORTANT: You proactively checked in because the driver just started driving. Greet them, ask them how they are doing, where they are going today, and how they are feeling. Keep it friendly, customized, and casual.")
-                        } else {
-                            val reason = when (currentTriggerSource) {
-                                "sudden_heavy_traffic" -> "sudden heavy traffic ahead"
-                                "late_night_fatigue" -> "a long late-night drive and potential fatigue"
-                                "attention_drop" -> "a predicted drop in attention or drowsiness"
-                                else -> currentTriggerSource
-                            }
-                            appendLine("IMPORTANT: You proactively checked in because of $reason. Mention this or weave it into your conversation naturally.")
-                        }
+                // prepare plain-text profile description for AI with explicit system context
+                val interactionTypeContext = when (currentInteractionType) {
+                    VoiceAgentTrigger.INTERACTION_TYPE_START_DRIVE -> {
+                        "INTERACTION TYPE: Start of drive - Welcome the driver warmly, set a positive mood, ask open-ended questions like where they are headed or what their day looks like. Keep it conversational and friendly to build rapport."
                     }
-                    
-                    appendLine("Address the driver by name ($displayName) naturally but not on every turn.")
-                    appendLine()
-                    appendLine("[ENDING THE CONVERSATION]")
-                    appendLine("CRITICAL INSTRUCTION: You MUST use the `end_call()` client tool to hang up. DO NOT use your default server-side 'End Session' action. If you just hang up naturally, the app will break and the driver's music will stay paused. You MUST use the `end_call()` tool.")
-                    appendLine("Call the `end_call()` tool when:")
-                    appendLine("- The driver gives short, unengaged answers, or seems disinterested. DO NOT drag the conversation out.")
-                    appendLine("- The driver has responded 2-3 times and sounds engaged and awake.")
-                    appendLine("- The driver says they're fine, done, or wants to stop.")
-                    appendLine("- You've completed a natural conversation arc.")
-                    appendLine("End gracefully with a short closing line before calling the tool, e.g. 'Drive safe, I'll let you focus' or 'I'll check in again later.'")
-                    appendLine()
-                    appendLine("[DYNAMIC TOOLS AVAILABLE]")
-                    appendLine("You have access to the following dynamic tools:")
-                    appendLine("1. `end_call()` -> Formally ends the conversation and resumes the user's music. YOU MUST CALL THIS TO HANG UP.")
-                    appendLine("2. `get_now_playing()` -> Returns the currently playing Spotify song.")
-                    appendLine("3. `play_music(query: String)` -> Plays a Spotify playlist matching the query (e.g. 'energetic', 'calm', 'focus', 'pop', 'chill').")
-                    appendLine("4. `get_driving_status()` -> Returns the real-time driving speed, location address, and local traffic/speed limit info.")
-                    appendLine("5. `find_nearby_places(query: String)` -> Searches Google Maps near the driver for the query (e.g. 'rest stops', 'cafes', 'gas stations', 'restaurants').")
-                    appendLine("Use these tools as standard JSON function calls.")
+                    else -> {
+                        "INTERACTION TYPE: Mid-drive check-in - Brief check-in to monitor well-being. Be concise and focused. Ask how they are doing or if they need a break. Keep questions short and easy to answer while driving."
+                    }
                 }
-                Log.d(TAG, "Queued system context:\n$systemContext")
-                pendingSystemContext = systemContext
-                Log.d(TAG, "First message (Cortex): $startMsg")
-                if (events.isNotEmpty()) {
+                val systemContext = "DRIVER NAME: $currentDriverId\nDRIVER INTERESTS: ${profile["interests"]}\nDRIVER COMPLEXITY: ${profile["complexity"]}\n\n$interactionTypeContext"
+                Log.d(TAG, "System context: $systemContext")
+                sendUpdate(systemContext)
+                // also log/start message
+                Log.d(TAG, "Start message: $startMsg")
+                pendingStartMessage = startMsg
+                if(events.isNotEmpty()){
                     val eventSummary = events.joinToString("; ") { ev ->
                         val title = ev.title.ifBlank { "(untitled)" }
                         val loc = ev.location?.let { " @ $it" } ?: ""
@@ -242,34 +148,23 @@ class VoiceAgentService : Service() {
                 val config = ConversationConfig(
                     agentId = BuildConfig.ELEVENLABS_AGENT_ID,
                     userId = "driver",
-                    overrides = Overrides(
-                        agent = AgentOverrides(
-                            firstMessage = startMsg.ifBlank { null }
-                        )
-                    ),
                     onConnect = { conversationId ->
                         Log.i(TAG, "✓ Connected: $conversationId")
                         updateNotification("🎙️ Listening...")
                         broadcastStatus("connected")
-                        // 1. Driver identity + profile
-                        pendingSystemContext?.let {
-                            sendUpdate(it)
-                            Log.d(TAG, "✓ Sent system context (driver profile)")
-                            pendingSystemContext = null
-                        }
-                        // 2. Live driving conditions
-                        pendingDrivingContext?.let {
-                            sendUpdate(it)
-                            Log.d(TAG, "✓ Sent driving context")
-                            pendingDrivingContext = null
-                        }
-                        // 3. Suggested topics
+                        
+                        // ALWAYS send an initial message to kickstart the conversation
+                        val initialMessage = pendingStartMessage ?: generateInitialGreeting()
+                        sendUpdate(initialMessage)
+                        Log.d(TAG, "✓ Sent initial message")
+                        pendingStartMessage = null
+                        
+                        // now send any pending context
                         pendingTopics?.let {
                             sendUpdate("Suggested topics: $it")
                             Log.d(TAG, "✓ Sent pre-convo topics")
                             pendingTopics = null
                         }
-                        // 4. Calendar events
                         pendingEventSummary?.let {
                             sendUpdate("Upcoming calendar events: $it")
                             Log.d(TAG, "✓ Sent calendar context")
@@ -289,8 +184,9 @@ class VoiceAgentService : Service() {
                         broadcastStatus(statusStr)
 
                         if (statusStr.contains("disconnected")) {
+                            Log.i(TAG, "🔌 Participant disconnected - triggering end of interaction")
                             isRunning = false
-                            playOutroAndStop()
+                            endInteraction()
                         }
                     },
                     onModeChange = { mode ->
@@ -308,100 +204,29 @@ class VoiceAgentService : Service() {
                             Log.d(TAG, "Voice detected: $score")
                         }
                     },
-                    // Use dedicated callbacks instead of parsing onMessage JSON
-                    onAgentResponse = { agentResponse ->
-                        Log.d(TAG, "Agent: $agentResponse")
-                        broadcastAiLog(agentResponse, "🤖 Agent")
-                    },
-                    onUserTranscript = { userTranscript ->
-                        Log.d(TAG, "Driver: $userTranscript")
-                        broadcastAiLog(userTranscript, "🧑 You")
+                    onMessage = { source, messageJson ->
+                        Log.d(TAG, "Message from $source: ${messageJson.take(500)}")
+                        // broadcast agent responses to UI
+                        if (source == "agent") {
+                            try {
+                                val msg = JSONObject(messageJson).optString("message", "")
+                                if (msg.isNotEmpty()) {
+                                    val intent = Intent(ACTION_AI_LOG).apply {
+                                        putExtra(EXTRA_AI_MSG, "🤖 Agent: $msg")
+                                    }
+                                    sendBroadcast(intent)
+                                }
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Failed to parse agent message: ${e.message}")
+                            }
+                        }
                     },
                     onUnhandledClientToolCall = { call ->
                         Log.w(TAG, "Unhandled tool call: $call")
                     },
                     // register device tools that agent can call
                     clientTools = mapOf(
-                        "get_driving_status" to object : ClientTool {
-                            override suspend fun execute(parameters: Map<String, Any>): ClientToolResult? {
-                                Log.i(TAG, "📢 Agent requested get_driving_status tool")
-                                val speedStr = liveSpeedMph?.let { "${it.toInt()} mph" } ?: "unknown speed"
-                                
-                                val lat = liveLat
-                                val lon = liveLon
-                                if (lat == null || lon == null) {
-                                    return ClientToolResult.success("Driving status: Speed is $speedStr, but exact GPS location is currently unavailable.")
-                                }
-
-                                val mapsClient = MapsRoadsClient(this@VoiceAgentService)
-                                val roadCtx = mapsClient.getRoadContext(lat.toDouble(), lon.toDouble())
-                                val address = mapsClient.reverseGeocode(lat.toDouble(), lon.toDouble())
-
-                                val trafficStr = roadCtx.trafficRatio?.let { ratio ->
-                                    if (ratio > 1.2f) "heavy traffic"
-                                    else if (ratio > 1.05f) "moderate traffic"
-                                    else "light traffic"
-                                } ?: "unknown traffic conditions"
-                                
-                                val statusMsg = "Driving status: The driver is currently going $speedStr with $trafficStr. The current location is $address."
-                                Log.i(TAG, "get_driving_status result: $statusMsg")
-                                return ClientToolResult.success(statusMsg)
-                            }
-                        },
-                        "find_nearby_places" to object : ClientTool {
-                            override suspend fun execute(parameters: Map<String, Any>): ClientToolResult? {
-                                val query = parameters["query"]?.toString() ?: return ClientToolResult.success("Please specify what kind of place to find, e.g. 'gas stations'.")
-                                Log.i(TAG, "📢 Agent requested find_nearby_places tool with query: $query")
-                                
-                                val lat = liveLat
-                                val lon = liveLon
-                                if (lat == null || lon == null) {
-                                    return ClientToolResult.success("Cannot search for $query: exact GPS location is currently unavailable.")
-                                }
-
-                                val mapsClient = MapsRoadsClient(this@VoiceAgentService)
-                                val result = mapsClient.findNearbyPlaces(lat.toDouble(), lon.toDouble(), query)
-                                return ClientToolResult.success(result)
-                            }
-                        },
-                        "get_now_playing" to object : ClientTool {
-                            override suspend fun execute(parameters: Map<String, Any>): ClientToolResult? {
-                                Log.i(TAG, "📢 Agent requested get_now_playing tool")
-                                val np = spotifyManager.getNowPlaying()
-                                return if (np.isSuccess) {
-                                    ClientToolResult.success(np.getOrNull() ?: "")
-                                } else {
-                                    ClientToolResult.success("Spotify is not available or not playing")
-                                }
-                            }
-                        },
-                        "play_music" to object : ClientTool {
-                            override suspend fun execute(parameters: Map<String, Any>): ClientToolResult? {
-                                val query = parameters["query"]?.toString() ?: "energetic"
-                                Log.i(TAG, "📢 Agent requested play_music tool with query: $query")
-                                val res = spotifyManager.play(query)
-                                return if (res.isSuccess) {
-                                    ClientToolResult.success(res.getOrNull() ?: "")
-                                } else {
-                                    ClientToolResult.success("Spotify is not available")
-                                }
-                            }
-                        },
                         // agent requests string name 'stop_conversation' to end session
-                        "end_call" to object : ClientTool {
-                            override suspend fun execute(parameters: Map<String, Any>): ClientToolResult? {
-                                Log.i(TAG, "📢 Agent requested end_call tool")
-                                session?.endSession()
-                                stopVoiceSession()
-                                return ClientToolResult.success("stopped")
-                            }
-                        },
-                        "skip_turn" to object : ClientTool {
-                            override suspend fun execute(parameters: Map<String, Any>): ClientToolResult? {
-                                Log.i(TAG, "📢 Agent requested skip_turn tool (giving the driver more time)")
-                                return ClientToolResult.success("turn skipped")
-                            }
-                        },
                         "stop_conversation" to object : ClientTool {
                             override suspend fun execute(parameters: Map<String, Any>): ClientToolResult? {
                                 Log.i(TAG, "📢 Agent requested stop_conversation tool")
@@ -460,7 +285,7 @@ class VoiceAgentService : Service() {
         }
     }
 
-    fun stopVoiceSession() {
+    private fun stopVoiceSession() {
         Log.i(TAG, "🛑 Stopping voice session...")
         isRunning = false
         
@@ -476,108 +301,69 @@ class VoiceAgentService : Service() {
                         Log.e(TAG, "Error ending session: ${e.message}", e)
                     } finally {
                         session = null
-                        Log.i(TAG, "Session ended, playing outro immediately...")
-                        playOutroAndStop()
+                        // Trigger end of interaction cleanup (guard prevents double calls)
+                        endInteraction()
                     }
                 }
             } else {
                 Log.d(TAG, "No active session to end")
-                playOutroAndStop()
+                endInteraction()
             }
         } catch (e: Exception) {
             Log.e(TAG, "Stop error: ${e.message}", e)
-            playOutroAndStop()
+            stopSelf()
         }
     }
 
-    /**
-     * Builds a plain-English driving context string from live telemetry.
-     * Deliberately natural so the agent can weave it in without sounding like surveillance.
-     */
-    suspend fun buildDrivingContextString(
-        speedMph: Float?,
-        roadTypes: String?,
-        trafficRatio: Float?,
-        tripStartMs: Long?,
-        spotify: SpotifyManager,
-        maps: MapsRoadsClient,
-        lat: Float?,
-        lon: Float?
-    ): String? {
-        val parts = mutableListOf<String>()
-
-        // Driving duration
-        if (tripStartMs != null) {
-            val minutes = ((System.currentTimeMillis() - tripStartMs) / 60_000).toInt().coerceAtLeast(0)
-            val timeOfDay = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
-            val timeLabel = when {
-                timeOfDay in 5..11 -> "morning"
-                timeOfDay in 12..16 -> "afternoon"
-                timeOfDay in 17..20 -> "evening"
-                else -> "night"
+    private fun endInteraction() {
+        if (interactionEnded) {
+            Log.d(TAG, "Interaction already ended, skipping duplicate cleanup")
+            return
+        }
+        interactionEnded = true
+        
+        Log.i(TAG, "🎙️ End of interaction - resuming Spotify and cleaning up...")
+        serviceScope.launch {
+            try {
+                // Resume Spotify playback if it was playing before
+                spotifyManager.resumeIfNeeded()
+                Log.i(TAG, "✓ Spotify resumed")
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to resume Spotify: ${e.message}")
             }
-            parts += if (minutes < 2) "just started driving ($timeLabel)"
-                     else "has been driving for $minutes minutes ($timeLabel)"
-        }
-
-        // Speed and road type
-        if (speedMph != null) {
-            val roadDesc = when {
-                roadTypes != null && roadTypes.contains("highway", ignoreCase = true) -> "highway"
-                roadTypes != null && roadTypes.contains("motorway", ignoreCase = true) -> "motorway"
-                roadTypes != null && roadTypes.contains("trunk", ignoreCase = true) -> "main road"
-                roadTypes != null && roadTypes.contains("residential", ignoreCase = true) -> "residential street"
-                roadTypes != null -> roadTypes.substringBefore(",")
-                else -> "road"
+            
+            try {
+                // Clean up session
+                session?.endSession()
+                session = null
+                Log.i(TAG, "✓ Session cleaned up")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error cleaning up session: ${e.message}")
             }
-            parts += "going %.0f mph on a %s".format(speedMph, roadDesc)
-        }
-
-        // Traffic
-        if (trafficRatio != null) {
-            val trafficDesc = when {
-                trafficRatio > 1.5f -> "heavy traffic slowing things down"
-                trafficRatio > 1.15f -> "moderate traffic"
-                else -> "clear roads"
+            
+            // Broadcast interaction end event
+            val intent = Intent(ACTION_AI_LOG).apply {
+                putExtra(EXTRA_AI_MSG, "✓ Interaction ended")
             }
-            parts += trafficDesc
+            sendBroadcast(intent)
+            
+            // Stop the foreground service
+            Log.i(TAG, "Stopping service...")
+            stopSelf()
         }
-
-        // Location
-        if (lat != null && lon != null) {
-            val address = maps.reverseGeocode(lat.toDouble(), lon.toDouble())
-            parts += "currently located at $address"
-        }
-
-        // Media Playback
-        val np = spotify.getNowPlaying()
-        if (np.isSuccess) {
-            val trackInfo = np.getOrNull()
-            if (!trackInfo.isNullOrBlank()) {
-                parts += "listening to $trackInfo"
-            }
-        }
-
-        if (parts.isEmpty()) return null
-        return "[CURRENT STATUS]\nThe driver ${parts.joinToString("; ")}."
     }
 
-    fun sendUpdate(text: String) {
+    private fun sendUpdate(text:String) {
         Log.d(TAG, "model input: $text")
         session?.sendContextualUpdate(text)
-        // broadcast to UI as a context entry (no source label)
-        broadcastAiLog(text, source = null)
-    }
-
-    fun broadcastAiLog(text: String, source: String?) {
+        // broadcast to UI to show in AI log
         val intent = Intent(ACTION_AI_LOG).apply {
             putExtra(EXTRA_AI_MSG, text)
-            source?.let { putExtra(EXTRA_MSG_SOURCE, it) }
         }
         sendBroadcast(intent)
     }
 
-    fun createNotificationChannel() {
+    private fun createNotificationChannel() {
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
@@ -592,7 +378,7 @@ class VoiceAgentService : Service() {
         }
     }
 
-    fun createNotification(text: String): Notification {
+    private fun createNotification(text: String): Notification {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("CogPilot Voice Agent")
             .setContentText(text)
@@ -602,13 +388,13 @@ class VoiceAgentService : Service() {
             .build()
     }
 
-    fun updateNotification(text: String) {
+    private fun updateNotification(text: String) {
         val manager = getSystemService(NotificationManager::class.java)
         val notification = createNotification(text)
         manager.notify(NOTIFICATION_ID, notification)
     }
 
-    fun broadcastStatus(status: String) {
+    private fun broadcastStatus(status: String) {
         val intent = Intent(ACTION_STATUS_CHANGE).apply {
             putExtra(EXTRA_STATUS, status)
             setPackage(packageName)
@@ -616,12 +402,37 @@ class VoiceAgentService : Service() {
         ContextCompat.startForegroundService(this, intent)
     }
 
+    private fun playIntroChime() {
+        try {
+            // Use ToneGenerator to play a pleasant notification chime
+            // Two tones: a rising chime effect
+            val toneGen = android.media.ToneGenerator(android.media.AudioManager.STREAM_NOTIFICATION, 100)
+            toneGen.startTone(android.media.ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 200) // 200ms
+            Thread.sleep(250)
+            toneGen.startTone(android.media.ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 200)
+            Thread.sleep(200)
+            toneGen.release()
+            Log.i(TAG, "✓ Intro chime played")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to play intro chime: ${e.message}")
+        }
+    }
+
+    private fun generateInitialGreeting(): String {
+        val greeting = when (currentInteractionType) {
+            VoiceAgentTrigger.INTERACTION_TYPE_START_DRIVE -> {
+                "Hey $currentDriverId! Ready to hit the road? Let's make this a smooth drive ahead."
+            }
+            else -> {
+                "Hey $currentDriverId, just checking in. How are you doing?"
+            }
+        }
+        Log.d(TAG, "Generated initial greeting: $greeting")
+        return greeting
+    }
+
     override fun onDestroy() {
         Log.i(TAG, "Service destroyed")
-        try {
-            unregisterReceiver(locationReceiver)
-        } catch (e: Exception) {}
-        
         serviceScope.launch {
             try {
                 session?.endSession()
@@ -631,40 +442,10 @@ class VoiceAgentService : Service() {
             }
         }
         serviceScope.cancel()
-        spotifyManager.disconnect()
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
     }
+
     override fun onBind(intent: Intent?): IBinder = VoiceAgentBinder()
-
-    private fun playOutroAndStop() {
-        if (isStopping) return
-        isStopping = true
-        
-        Log.i(TAG, "Playing outro sound...")
-        try {
-            val player = MediaPlayer.create(this, R.raw.outro)
-            if (player != null) {
-                player.setOnCompletionListener { 
-                    it.release()
-                    finalizeStop()
-                }
-                player.start()
-            } else {
-                finalizeStop()
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to play outro", e)
-            finalizeStop()
-        }
-    }
-
-    private fun finalizeStop() {
-        serviceScope.launch {
-            spotifyManager.resumeIfNeeded()
-            Log.i(TAG, "Stopping service...")
-            stopSelf()
-        }
-    }
 }
 

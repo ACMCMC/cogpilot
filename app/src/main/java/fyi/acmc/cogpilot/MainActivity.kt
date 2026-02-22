@@ -70,7 +70,8 @@ class MainActivity : AppCompatActivity() {
                 // refresh profile info display
                 refreshProfileDisplay()
             },
-            { onVoiceToggle() }
+            { onVoiceToggle() },
+            { onStartDrive() }
         )
         val rootView = uiManager.createUI()
         setContentView(rootView)
@@ -114,8 +115,7 @@ class MainActivity : AppCompatActivity() {
         aiLogReceiver = object : android.content.BroadcastReceiver() {
             override fun onReceive(context: android.content.Context, intent: android.content.Intent) {
                 val msg = intent.getStringExtra(VoiceAgentService.EXTRA_AI_MSG) ?: return
-                val source = intent.getStringExtra(VoiceAgentService.EXTRA_MSG_SOURCE)
-                uiManager.logAiInput(msg, source)
+                uiManager.logAiInput(msg)
             }
         }
         val filter = android.content.IntentFilter("fyi.acmc.cogpilot.voice.AI_LOG")
@@ -188,6 +188,7 @@ class MainActivity : AppCompatActivity() {
                 this,
                 driverId      = currentUserId,
                 source        = "button_click",
+                interactionType = VoiceAgentTrigger.INTERACTION_TYPE_CHECK_IN,
                 speedMph      = activeSpeedMph.takeIf { it > 0 },
                 roadTypes     = rc?.types?.joinToString(",")?.ifBlank { null },
                 trafficRatio  = rc?.trafficRatio,
@@ -198,6 +199,24 @@ class MainActivity : AppCompatActivity() {
             uiManager.setVoiceState(false)
             VoiceAgentTrigger.stop(this)
         }
+    }
+
+    private fun onStartDrive() {
+        Log.i("CogPilot", "🚗 Start Drive interaction triggered")
+        uiManager.setVoiceState(true)
+        val rc = lastRoadContext
+        val activeSpeedMph = carSpeedMph ?: lastSpeedMph
+        VoiceAgentTrigger.start(
+            this,
+            driverId = currentUserId,
+            source = "start_drive_button",
+            interactionType = VoiceAgentTrigger.INTERACTION_TYPE_START_DRIVE,
+            speedMph = activeSpeedMph.takeIf { it > 0 },
+            roadTypes = rc?.types?.joinToString(",")?.ifBlank { null },
+            trafficRatio = rc?.trafficRatio,
+            tripStartMs = tripStartMs
+        )
+        voiceActive = true
     }
 
     private fun onVoiceTrigger() {
@@ -229,6 +248,7 @@ class MainActivity : AppCompatActivity() {
                         this@MainActivity,
                         driverId      = currentUserId,
                         source        = "driving_started",
+                        interactionType = VoiceAgentTrigger.INTERACTION_TYPE_CHECK_IN,
                         speedMph      = activeSpeedMph.takeIf { it > 0 },
                         roadTypes     = rc?.types?.joinToString(",")?.ifBlank { null },
                         trafficRatio  = rc?.trafficRatio,
@@ -291,6 +311,7 @@ class MainActivity : AppCompatActivity() {
                                             this@MainActivity,
                                             driverId      = currentUserId,
                                             source        = triggerSource,
+                                            interactionType = VoiceAgentTrigger.INTERACTION_TYPE_CHECK_IN,
                                             speedMph      = activeSpeedMph.takeIf { it > 0 },
                                             roadTypes     = rc?.types?.joinToString(",")?.ifBlank { null },
                                             trafficRatio  = rc?.trafficRatio,
@@ -436,7 +457,8 @@ class UIManager(
     private val activity: AppCompatActivity,
     initialUserId: String,
     private val onUserChange: (String) -> Unit,
-    private val onVoiceToggle: () -> Unit
+    private val onVoiceToggle: () -> Unit,
+    private val onStartDrive: (() -> Unit)? = null
 ) {
     private var selectedUserId = initialUserId
 
@@ -607,6 +629,20 @@ class UIManager(
             }
         }
 
+        val startDriveButton = MaterialButton(activity).apply {
+            text = "Start Drive"
+            isAllCaps = false
+            setPadding(20, 14, 20, 14)
+            layoutParams = android.widget.LinearLayout.LayoutParams(
+                android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = 0; bottomMargin = 12 }
+            setBackgroundColor(android.graphics.Color.parseColor("#1E90FF"))
+            setOnClickListener {
+                onStartDrive?.invoke()
+            }
+        }
+
         val hint = TextView(activity).apply {
             text = "Low latency: WebRTC, Scribe v2"
             textSize = 11f
@@ -617,6 +653,7 @@ class UIManager(
 
         content.addView(label)
         content.addView(voiceButton)
+        content.addView(startDriveButton)
         content.addView(hint)
         card.addView(content)
         return card
