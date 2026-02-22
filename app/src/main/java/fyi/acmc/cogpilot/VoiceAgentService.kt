@@ -48,6 +48,7 @@ class VoiceAgentService : Service() {
 
     // hold context updates until connected
     private var pendingSystemContext: String? = null
+    private var pendingDrivingContext: String? = null
     private var pendingTopics: String? = null
     private var pendingEventSummary: String? = null
     private var pendingStartMessage: String? = null
@@ -66,6 +67,24 @@ class VoiceAgentService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.i(TAG, "onStartCommand: ${intent?.action}")
         intent?.getStringExtra("EXTRA_USER_ID")?.let { currentDriverId = it }
+
+        // Capture driving context from caller (available at the moment the session is triggered)
+        if (intent?.action == ACTION_START) {
+            val speedMph     = if (intent.hasExtra(VoiceAgentTrigger.EXTRA_SPEED_MPH))     intent.getFloatExtra(VoiceAgentTrigger.EXTRA_SPEED_MPH,     -1f) else null
+            val roadTypes    = intent.getStringExtra(VoiceAgentTrigger.EXTRA_ROAD_TYPES)
+            val speedLimit   = if (intent.hasExtra(VoiceAgentTrigger.EXTRA_SPEED_LIMIT))   intent.getFloatExtra(VoiceAgentTrigger.EXTRA_SPEED_LIMIT,   -1f) else null
+            val trafficRatio = if (intent.hasExtra(VoiceAgentTrigger.EXTRA_TRAFFIC_RATIO)) intent.getFloatExtra(VoiceAgentTrigger.EXTRA_TRAFFIC_RATIO, -1f) else null
+            val tripStartMs  = if (intent.hasExtra(VoiceAgentTrigger.EXTRA_TRIP_START_MS)) intent.getLongExtra(VoiceAgentTrigger.EXTRA_TRIP_START_MS,  -1L) else null
+
+            pendingDrivingContext = buildDrivingContextString(
+                speedMph     = speedMph?.takeIf { it >= 0 },
+                roadTypes    = roadTypes,
+                speedLimit   = speedLimit?.takeIf { it >= 0 },
+                trafficRatio = trafficRatio?.takeIf { it >= 0 },
+                tripStartMs  = tripStartMs?.takeIf { it > 0 }
+            )
+            Log.d(TAG, "Queued driving context: $pendingDrivingContext")
+        }
         
         when (intent?.action) {
             ACTION_START -> {
@@ -143,22 +162,31 @@ class VoiceAgentService : Service() {
                         Log.i(TAG, "✓ Connected: $conversationId")
                         updateNotification("🎙️ Listening...")
                         broadcastStatus("connected")
-                        // Send driver profile FIRST so the agent knows who it's talking to
+                        // 1. Driver identity + profile
                         pendingSystemContext?.let {
                             sendUpdate(it)
                             Log.d(TAG, "✓ Sent system context (driver profile)")
                             pendingSystemContext = null
                         }
+                        // 2. Live driving conditions
+                        pendingDrivingContext?.let {
+                            sendUpdate(it)
+                            Log.d(TAG, "✓ Sent driving context")
+                            pendingDrivingContext = null
+                        }
+                        // 3. Personalised conversation opener
                         pendingStartMessage?.let {
                             sendUpdate(it)
                             Log.d(TAG, "✓ Sent start message")
                             pendingStartMessage = null
                         }
+                        // 4. Suggested topics
                         pendingTopics?.let {
                             sendUpdate("Suggested topics: $it")
                             Log.d(TAG, "✓ Sent pre-convo topics")
                             pendingTopics = null
                         }
+                        // 5. Calendar events
                         pendingEventSummary?.let {
                             sendUpdate("Upcoming calendar events: $it")
                             Log.d(TAG, "✓ Sent calendar context")
@@ -306,6 +334,61 @@ class VoiceAgentService : Service() {
             Log.e(TAG, "Stop error: ${e.message}", e)
             stopSelf()
         }
+    }
+
+    /**
+     * Builds a plain-English driving context string from live telemetry.
+     * Deliberately natural so the agent can weave it in without sounding like surveillance.
+     */
+    private fun buildDrivingContextString(
+        speedMph: Float?,
+        roadTypes: String?,
+        speedLimit: Float?,
+        trafficRatio: Float?,
+        tripStartMs: Long?
+    ): String? {
+        val parts = mutableListOf<String>()
+
+        // Driving duration
+        if (tripStartMs != null) {
+            val minutes = ((System.currentTimeMillis() - tripStartMs) / 60_000).toInt().coerceAtLeast(0)
+            val timeOfDay = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+            val timeLabel = when {
+                timeOfDay in 5..11 -> "morning"
+                timeOfDay in 12..16 -> "afternoon"
+                timeOfDay in 17..20 -> "evening"
+                else -> "night"
+            }
+            parts += if (minutes < 2) "just started driving ($timeLabel)"
+                     else "has been driving for $minutes minutes ($timeLabel)"
+        }
+
+        // Speed and road type
+        if (speedMph != null) {
+            val roadDesc = when {
+                roadTypes != null && roadTypes.contains("highway", ignoreCase = true) -> "highway"
+                roadTypes != null && roadTypes.contains("motorway", ignoreCase = true) -> "motorway"
+                roadTypes != null && roadTypes.contains("trunk", ignoreCase = true) -> "main road"
+                roadTypes != null && roadTypes.contains("residential", ignoreCase = true) -> "residential street"
+                roadTypes != null -> roadTypes.substringBefore(",")
+                else -> "road"
+            }
+            val limitNote = if (speedLimit != null) ", speed limit ${speedLimit.toInt()} mph" else ""
+            parts += "going %.0f mph on a %s%s".format(speedMph, roadDesc, limitNote)
+        }
+
+        // Traffic
+        if (trafficRatio != null) {
+            val trafficDesc = when {
+                trafficRatio > 1.5f -> "heavy traffic slowing things down"
+                trafficRatio > 1.15f -> "moderate traffic"
+                else -> "clear roads"
+            }
+            parts += trafficDesc
+        }
+
+        if (parts.isEmpty()) return null
+        return "[CURRENT DRIVING CONDITIONS]\nThe driver ${parts.joinToString("; ")}."
     }
 
     private fun sendUpdate(text:String) {

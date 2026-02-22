@@ -13,11 +13,39 @@ object VoiceAgentTrigger {
 
     private const val TAG = "VoiceAgentTrigger"
 
-    fun start(context: Context, driverId: String = "aldan_creo", source: String = "manual") {
+    // Extra key constants shared between caller and service
+    const val EXTRA_SPEED_MPH     = "extra_speed_mph"
+    const val EXTRA_ROAD_TYPE     = "extra_road_type"
+    const val EXTRA_ROAD_TYPES    = "extra_road_types"
+    const val EXTRA_SPEED_LIMIT   = "extra_speed_limit"
+    const val EXTRA_TRAFFIC_RATIO = "extra_traffic_ratio"
+    const val EXTRA_TRIP_START_MS = "extra_trip_start_ms"
+    const val EXTRA_LAT           = "extra_lat"
+    const val EXTRA_LON           = "extra_lon"
+
+    fun start(
+        context: Context,
+        driverId: String = "aldan_creo",
+        source: String = "manual",
+        speedMph: Float? = null,
+        roadTypes: String? = null,
+        speedLimitMph: Float? = null,
+        trafficRatio: Float? = null,
+        tripStartMs: Long? = null,
+        lat: Double? = null,
+        lon: Double? = null
+    ) {
         Log.i(TAG, "Starting voice agent for user=$driverId triggered by: $source")
         val intent = Intent(context, VoiceAgentService::class.java).apply {
             action = VoiceAgentService.ACTION_START
             putExtra("EXTRA_USER_ID", driverId)
+            speedMph?.let      { putExtra(EXTRA_SPEED_MPH,     it) }
+            roadTypes?.let     { putExtra(EXTRA_ROAD_TYPES,    it) }
+            speedLimitMph?.let { putExtra(EXTRA_SPEED_LIMIT,   it) }
+            trafficRatio?.let  { putExtra(EXTRA_TRAFFIC_RATIO, it) }
+            tripStartMs?.let   { putExtra(EXTRA_TRIP_START_MS, it) }
+            lat?.let           { putExtra(EXTRA_LAT,           it) }
+            lon?.let           { putExtra(EXTRA_LON,           it) }
         }
         try {
             ContextCompat.startForegroundService(context, intent)

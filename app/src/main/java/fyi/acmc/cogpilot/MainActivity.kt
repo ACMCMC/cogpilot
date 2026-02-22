@@ -39,6 +39,11 @@ class MainActivity : AppCompatActivity() {
     private var lastRiskScore = 0f
     private var currentUserId: String = "aldan_creo"
 
+    // Live driving state — updated by location callback, passed to agent on trigger
+    private var lastRoadContext: RoadContext? = null
+    private var lastSpeedMph: Float = 0f
+    private var tripStartMs: Long = System.currentTimeMillis()  // reset when session starts
+
     private lateinit var uiManager: UIManager
     
     private var voiceStatusReceiver: android.content.BroadcastReceiver? = null
@@ -158,7 +163,17 @@ class MainActivity : AppCompatActivity() {
         if (voiceActive) {
             Log.i("CogPilot", "🎙️ Voice session starting via button")
             uiManager.setVoiceState(true)
-            VoiceAgentTrigger.start(this, driverId = currentUserId, source = "button_click")
+            val rc = lastRoadContext
+            VoiceAgentTrigger.start(
+                this,
+                driverId      = currentUserId,
+                source        = "button_click",
+                speedMph      = lastSpeedMph.takeIf { it > 0 },
+                roadTypes     = rc?.types?.joinToString(",")?.ifBlank { null },
+                speedLimitMph = rc?.speedLimitMph,
+                trafficRatio  = rc?.trafficRatio,
+                tripStartMs   = tripStartMs
+            )
         } else {
             Log.i("CogPilot", "🛑 Voice session stopping")
             uiManager.setVoiceState(false)
@@ -212,7 +227,17 @@ class MainActivity : AppCompatActivity() {
                                 if (now - lastAutoTriggerTime > 30000) { // min 30s between auto-triggers
                                     Log.i("CogPilot", "📢 Auto-triggering voice agent - attention dropping (risk: ${riskData.riskScore})")
                                     lastAutoTriggerTime = now
-                                    VoiceAgentTrigger.start(this@MainActivity, driverId = currentUserId, source = "attention_drop")
+                                    val rc = lastRoadContext
+                                    VoiceAgentTrigger.start(
+                                        this@MainActivity,
+                                        driverId      = currentUserId,
+                                        source        = "attention_drop",
+                                        speedMph      = lastSpeedMph.takeIf { it > 0 },
+                                        roadTypes     = rc?.types?.joinToString(",")?.ifBlank { null },
+                                        speedLimitMph = rc?.speedLimitMph,
+                                        trafficRatio  = rc?.trafficRatio,
+                                        tripStartMs   = tripStartMs
+                                    )
                                     voiceActive = true
                                     uiManager.setVoiceState(true)
                                 }
@@ -276,9 +301,12 @@ class MainActivity : AppCompatActivity() {
                 locationCapture.startCapture(
                     snowflakeManager,
                     callback = { speed, heading ->
+                        lastSpeedMph = speed
+                        if (tripStartMs == 0L) tripStartMs = System.currentTimeMillis()
                         uiManager.updateMetrics(speed, heading)
                     },
                     debug = { speed, heading, roadCtx, lat, lon ->
+                        lastRoadContext = roadCtx  // stash for voice trigger
                         uiManager.updateDebug(
                             speed = speed,
                             heading = heading,
