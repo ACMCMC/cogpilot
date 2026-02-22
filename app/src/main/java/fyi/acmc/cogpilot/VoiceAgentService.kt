@@ -27,6 +27,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.withContext
 import android.content.BroadcastReceiver
 import org.json.JSONObject
 import org.json.JSONArray
@@ -63,6 +64,7 @@ class VoiceAgentService : Service() {
     private val snowflakeManager = SnowflakeManager()
     private val calendarContext = CalendarContextProvider(this)
     private val spotifyManager by lazy { SpotifyManager(this) }
+    private val googleMapsManager by lazy { GoogleMapsManager(BuildConfig.GOOGLE_MAPS_API_KEY) }
     
     // Track interaction history during the driving session for context in future interactions
     private val interactionHistory = mutableListOf<String>()
@@ -159,25 +161,8 @@ class VoiceAgentService : Service() {
 
         serviceScope.launch {
             try {
-                // Fade out Spotify music before starting voice agent (pause, not stop)
-                Log.i(TAG, "🎵 Fading out Spotify music (5000ms)...")
-                spotifyManager.fadeOutAndPause(durationMs = 5000L)
-                
-                // Wait for fade to complete before playing chime
-                Log.d(TAG, "⏳ Waiting for music fade to complete...")
-                kotlinx.coroutines.delay(5500L)  // 5s fade + 0.5s buffer
-                
-                // Play intro chime after fade completes
-                Log.i(TAG, "🔔 Music paused, now playing intro chime...")
-                try {
-                    playIntroChime()
-                    Log.i(TAG, "✅ 🔔 Chime playback method completed successfully")
-                } catch (e: Exception) {
-                    Log.e(TAG, "❌ Chime playback failed: ${e.message}", e)
-                }
-                
-                // gather context before starting the conversation
-                val greetingSeed = Random.nextInt(1000, 9999)
+                // 1. Gather context first while music is still playing full volume
+                val greetingSeed = kotlin.random.Random.nextInt(1000, 9999)
                 val recentInteractions = snowflakeManager.getRecentInteractionSummaries(currentDriverId, limit = 3)
                 val lastTripSummary = snowflakeManager.getLastTripSummary(currentDriverId)
                 val startMsg = snowflakeManager.generateStartMessage(currentDriverId, greetingSeed, recentInteractions)
@@ -192,7 +177,7 @@ class VoiceAgentService : Service() {
                 val profileDetails = _riskEngine?.getDriverProfileDetails() ?: emptyMap()
                 
                 // Build rich calendar context
-                val calendarContext = if (events.isNotEmpty()) {
+                val calendarContextStr = if (events.isNotEmpty()) {
                     "\n\nUPCOMING CALENDAR EVENTS:\n" + events.joinToString("\n") { ev ->
                         val time = java.text.SimpleDateFormat("HH:mm", java.util.Locale.US).format(ev.startMs)
                         val title = ev.title.ifBlank { "(untitled)" }
@@ -215,7 +200,7 @@ Welcome the driver warmly and set a positive mood. Ask engaging questions like:
 - What's their main focus/goal for the drive?
 - Are there any concerns or things on their mind?
 - Reference their calendar events if relevant to the journey
-Keep it conversational and friendly to build rapport.$calendarContext"""
+Keep it conversational and friendly to build rapport.$calendarContextStr"""
                     }
                     else -> {
                         // Include previous interaction context and smarter prompts for mid-drive check-ins
@@ -231,7 +216,7 @@ Have a focused, contextual conversation. Ask smart questions like:
 - Thoughts on the current road conditions or scenery?
 - Would they benefit from a break or music change?
 Be concise and easy to answer while driving.
-$historyContext$calendarContext"""
+$historyContext$calendarContextStr"""
                     }
                 }
                 
@@ -275,7 +260,24 @@ $historyContext$calendarContext"""
                 Log.d(TAG, "System context: $systemContext")
 
                 val initialMessage = startMsg.ifBlank { generateInitialGreeting() }
-                Log.d(TAG, "Initial message override: $initialMessage")
+                Log.i(TAG, "✅ Context ready. Initial message: $initialMessage")
+
+                // 2. Now that we're ready to talk, fade out Spotify (snappier 2s fade)
+                Log.i(TAG, "🎵 Fading out Spotify music (2000ms)...")
+                spotifyManager.fadeOutAndPause(durationMs = 2000L)
+                
+                // 3. Wait for fade to complete before playing chime
+                kotlinx.coroutines.delay(2200L) // 2s fade + 0.2s buffer
+                
+                // 4. Play intro chime
+                Log.i(TAG, "🔔 Music paused, now playing intro chime...")
+                try {
+                    playIntroChime()
+                    Log.i(TAG, "✅ 🔔 Chime playback method completed successfully")
+                } catch (e: Exception) {
+                    Log.e(TAG, "❌ Chime playback failed: ${e.message}", e)
+                }
+                
                 pendingStartMessage = null
                 if(events.isNotEmpty()){
                     val eventSummary = events.joinToString("; ") { ev ->
@@ -471,29 +473,18 @@ $historyContext$calendarContext"""
                                 val query = parameters["param_query"] as? String ?: parameters["query"] as? String ?: "rest area"
                                 Log.i(TAG, "📢 Agent requested nearby places: $query")
                                 
-                                // Mock response for places search
-                                val places = JSONArray()
+                                val location = _riskEngine?.getLastLocation()
+                                val lat = location?.latitude ?: 37.7749
+                                val lng = location?.longitude ?: -122.4194
                                 
-                                val place1 = JSONObject()
-                                place1.put("name", "Starbucks")
-                                place1.put("address", "123 Main St")
-                                place1.put("distance", "0.8 miles")
-                                place1.put("rating", 4.2)
-                                places.put(place1)
-
-                                val place2 = JSONObject()
-                                place2.put("name", "Rest Area 42")
-                                place2.put("address", "I-95 North, Mile 142")
-                                place2.put("distance", "2.1 miles")
-                                place2.put("rating", 3.8)
-                                places.put(place2)
+                                val places = googleMapsManager.searchPlaces(query, lat, lng)
                                 
                                 val response = JSONObject()
                                 response.put("results", places)
                                 response.put("query", query)
                                 response.put("count", places.length())
                                 
-                                Log.d(TAG, "Places response: $response")
+                                Log.d(TAG, "Real Places response: $response")
                                 return ClientToolResult.success(response.toString())
                             }
                         }
@@ -524,15 +515,49 @@ $historyContext$calendarContext"""
     }
 
     private fun stopVoiceSession() {
-        Log.i(TAG, "🛑 Stopping voice session (user pressed stop button)...")
-        isRunning = false
-        stopSelf()  // Triggers onDestroy which handles outro + Spotify + cleanup
+        Log.i(TAG, "🛑 Stopping voice session via performCleanupAndStop (user action)...")
+        performCleanupAndStop()
     }
 
     private fun handleAgentEndTool(toolName: String) {
-        Log.i(TAG, "🧰 handleAgentEndTool: $toolName - stopping service to trigger Android lifecycle (onDestroy)")
+        Log.i(TAG, "🧰 handleAgentEndTool: $toolName - initiating graceful cleanup")
+        performCleanupAndStop()
+    }
+
+    private fun performCleanupAndStop() {
+        if (!isRunning && interactionEnded) return
         isRunning = false
-        stopSelf()  // This triggers onDestroy() which plays outro + resumes Spotify
+        
+        serviceScope.launch {
+            Log.i(TAG, "🏗️ Graceful cleanup starting...")
+            
+            // 1. Play outro
+            try {
+                playOutro()
+                kotlinx.coroutines.delay(800) 
+            } catch (e: Exception) {
+                Log.e(TAG, "Cleanup: Outro failed: ${e.message}")
+            }
+
+            // 2. Resume Spotify
+            try {
+                spotifyManager.resumeIfNeeded()
+            } catch (e: Exception) {
+                Log.e(TAG, "Cleanup: Spotify resume failed: ${e.message}")
+            }
+
+            // 3. End interaction (includes Snowflake summary + session close)
+            endInteraction()
+            
+            // 4. Final wait for async tasks
+            kotlinx.coroutines.delay(1000)
+            
+            // 5. Finally stop the service
+            Log.i(TAG, "🏁 Graceful cleanup finished. Stopping service.")
+            withContext(Dispatchers.Main) {
+                stopSelf()
+            }
+        }
     }
 
     private fun endInteraction() {
@@ -754,45 +779,14 @@ $historyContext$calendarContext"""
     }
 
     override fun onDestroy() {
-        Log.i(TAG, "🛑 ⚠️ SERVICE DESTROYED - GUARANTEED CLEANUP TRIGGERED ⚠️")
-        Log.i(TAG, "Reason: Service exiting for ANY reason (stop, crash, memory pressure, system kill, etc.)")
+        Log.i(TAG, "🛑 SERVICE onDestroy() - Final resource release")
         
-        try {
-            // ANDROID LIFECYCLE: Play outro and resume Spotify BEFORE ending interaction
-            Log.i(TAG, "🎧 Playing outro (Android lifecycle cleanup)...")
-            try {
-                playOutro()
-                Log.i(TAG, "✅ Outro playback initiated")
-                Thread.sleep(500)  // Let outro start
-            } catch (e: Exception) {
-                Log.e(TAG, "Warning: Outro failed: ${e.message}")
-            }
-            
-            // Resume Spotify in a coroutine
-            Log.i(TAG, "🎵 Resuming Spotify (Android lifecycle cleanup)...")
-            serviceScope.launch {
-                try {
-                    spotifyManager.resumeIfNeeded()
-                    Log.i(TAG, "✅ Spotify resume completed")
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error resuming Spotify: ${e.message}", e)
-                }
-            }
-            Thread.sleep(500)  // Give it a moment
-            
-            // Now call endInteraction for ElevenLabs session cleanup
-            Log.i(TAG, "Calling endInteraction() from onDestroy()...")
-            endInteraction()
-            Log.i(TAG, "✓ endInteraction() initiated")
-            
-            // Wait for cleanup coroutine to complete
-            Log.i(TAG, "⏳ Waiting 1.5 seconds for cleanup coroutine to complete...")
-            Thread.sleep(1500)
-            Log.i(TAG, "✓ Cleanup coroutine should have completed")
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Unexpected error in onDestroy: ${e.message}", e)
-        } finally {
+        // Ensure interaction is marked as ended if it wasn't already
+        // (but don't block for long async tasks here)
+        if (!interactionEnded) {
+            _riskEngine?.stopTrip()
+            interactionEnded = true
+        }
             Log.i(TAG, "🛑 Final cleanup: releasing resources...")
             
             // Unregister location receiver
@@ -820,7 +814,6 @@ $historyContext$calendarContext"""
             stopForeground(STOP_FOREGROUND_REMOVE)
             super.onDestroy()
             Log.i(TAG, "✅ Service onDestroy() fully completed")
-        }
     }
 
     override fun onBind(intent: Intent?): IBinder = VoiceAgentBinder()

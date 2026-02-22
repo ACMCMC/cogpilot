@@ -99,6 +99,8 @@ class RiskDecisionEngine(private val context: Context) {
         sleepHoursToday = hours
     }
 
+    fun getLastLocation(): Location? = lastLocation
+
     // ========================================================================
     // SNOWFLAKE: Load driver profile + memory
     // ========================================================================

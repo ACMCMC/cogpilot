@@ -86,15 +86,6 @@ class SpotifyManager(private val context: Context) {
         
         Log.i(TAG, "🎵 Resuming playback via Android media control...")
         
-        // Set volume back to max first
-        try {
-            val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-            Log.d(TAG, "Setting volume to max: $maxVolume")
-            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxVolume, 0)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to set volume: ${e.message}", e)
-        }
-        
         // Resume playback via media control
         sendMediaKeyEvent(KeyEvent.KEYCODE_MEDIA_PLAY)
         Log.i(TAG, "✅ Resume media control sent")
