@@ -279,6 +279,20 @@ class VoiceAgentService : Service() {
                             }
                         },
                         // agent requests string name 'stop_conversation' to end session
+                        "end_call" to object : ClientTool {
+                            override suspend fun execute(parameters: Map<String, Any>): ClientToolResult? {
+                                Log.i(TAG, "📢 Agent requested end_call tool")
+                                session?.endSession()
+                                stopVoiceSession()
+                                return ClientToolResult.success("stopped")
+                            }
+                        },
+                        "skip_turn" to object : ClientTool {
+                            override suspend fun execute(parameters: Map<String, Any>): ClientToolResult? {
+                                Log.i(TAG, "📢 Agent requested skip_turn tool (giving the driver more time)")
+                                return ClientToolResult.success("turn skipped")
+                            }
+                        },
                         "stop_conversation" to object : ClientTool {
                             override suspend fun execute(parameters: Map<String, Any>): ClientToolResult? {
                                 Log.i(TAG, "📢 Agent requested stop_conversation tool")
