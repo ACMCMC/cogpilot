@@ -13,6 +13,11 @@ import androidx.core.content.ContextCompat
 import io.elevenlabs.ConversationClient
 import io.elevenlabs.ConversationConfig
 import io.elevenlabs.ConversationSession
+import io.elevenlabs.AgentOverrides
+import io.elevenlabs.ClientOverrides
+import io.elevenlabs.Language
+import io.elevenlabs.Overrides
+import io.elevenlabs.PromptOverrides
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -47,6 +52,15 @@ class VoiceAgentService : Service() {
     private val snowflakeManager = SnowflakeManager()
     private val calendarContext = CalendarContextProvider(this)
     private val spotifyManager by lazy { SpotifyManager(this) }
+    
+    // Track interaction history during the driving session for context in future interactions
+    private val interactionHistory = mutableListOf<String>()
+    // Track messages in current session for creating summary on end
+    private val currentSessionMessages = mutableListOf<String>()
+    // Heartbeat monitoring to detect silent disconnects
+    private var lastHeartbeatMs = 0L
+    private var heartbeatJob: Job? = null
+    private val HEARTBEAT_TIMEOUT_MS = 12_000L
 
     // hold context updates until connected
     private var pendingTopics: String? = null
@@ -100,6 +114,9 @@ class VoiceAgentService : Service() {
         Log.i(TAG, "🎙️ Starting voice agent with official SDK...")
         isRunning = true
         interactionEnded = false  // Reset for new interaction
+        currentSessionMessages.clear()  // Reset messages for this session
+        lastHeartbeatMs = System.currentTimeMillis()
+        startHeartbeatMonitor()
 
         serviceScope.launch {
             try {
@@ -108,8 +125,13 @@ class VoiceAgentService : Service() {
                 spotifyManager.fadeOutAndPause(durationMs = 5000L)
                 
                 // Play intro chime after fade completes
-                Log.i(TAG, "🔔 Playing intro chime...")
-                playIntroChime()
+                Log.i(TAG, "🔔 About to play intro chime...")
+                try {
+                    playIntroChime()
+                    Log.i(TAG, "✅ 🔔 Chime playback method completed successfully")
+                } catch (e: Exception) {
+                    Log.e(TAG, "❌ Chime playback failed: ${e.message}", e)
+                }
                 
                 // gather context before starting the conversation
                 val startMsg = snowflakeManager.generateStartMessage(1)
@@ -122,18 +144,27 @@ class VoiceAgentService : Service() {
                 // prepare plain-text profile description for AI with explicit system context
                 val interactionTypeContext = when (currentInteractionType) {
                     VoiceAgentTrigger.INTERACTION_TYPE_START_DRIVE -> {
+                        // Clear history for start of drive - fresh start
+                        interactionHistory.clear()
+                        Log.d(TAG, "Cleared interaction history for START_DRIVE")
                         "INTERACTION TYPE: Start of drive - Welcome the driver warmly, set a positive mood, ask open-ended questions like where they are headed or what their day looks like. Keep it conversational and friendly to build rapport."
                     }
                     else -> {
-                        "INTERACTION TYPE: Mid-drive check-in - Brief check-in to monitor well-being. Be concise and focused. Ask how they are doing or if they need a break. Keep questions short and easy to answer while driving."
+                        // Include previous interaction context for mid-drive check-ins
+                        val historyContext = if (interactionHistory.isNotEmpty()) {
+                            "\n\nPREVIOUS INTERACTIONS DURING THIS DRIVE:\n${interactionHistory.joinToString("\n---\n")}"
+                        } else {
+                            ""
+                        }
+                        "INTERACTION TYPE: Mid-drive check-in - Brief check-in to monitor well-being. Be concise and focused. Ask how they are doing or if they need a break. Keep questions short and easy to answer while driving.$historyContext"
                     }
                 }
                 val systemContext = "DRIVER NAME: $currentDriverId\nDRIVER INTERESTS: ${profile["interests"]}\nDRIVER COMPLEXITY: ${profile["complexity"]}\n\n$interactionTypeContext"
                 Log.d(TAG, "System context: $systemContext")
-                sendUpdate(systemContext)
-                // also log/start message
-                Log.d(TAG, "Start message: $startMsg")
-                pendingStartMessage = startMsg
+
+                val initialMessage = startMsg.ifBlank { generateInitialGreeting() }
+                Log.d(TAG, "Initial message override: $initialMessage")
+                pendingStartMessage = null
                 if(events.isNotEmpty()){
                     val eventSummary = events.joinToString("; ") { ev ->
                         val title = ev.title.ifBlank { "(untitled)" }
@@ -147,17 +178,30 @@ class VoiceAgentService : Service() {
                 // setup callbacks for the official SDK
                 val config = ConversationConfig(
                     agentId = BuildConfig.ELEVENLABS_AGENT_ID,
-                    userId = "driver",
+                    userId = currentDriverId,
+                    overrides = Overrides(
+                        agent = AgentOverrides(
+                            prompt = PromptOverrides(prompt = systemContext),
+                            firstMessage = initialMessage,
+                            language = Language.EN
+                        ),
+                        client = ClientOverrides(
+                            source = "android_sdk",
+                            version = BuildConfig.VERSION_NAME
+                        )
+                    ),
+                    dynamicVariables = mapOf(
+                        "driver_name" to currentDriverId,
+                        "interaction_type" to currentInteractionType,
+                        "driver_interests" to (profile["interests"] ?: ""),
+                        "driver_complexity" to (profile["complexity"] ?: ""),
+                        "interaction_history" to interactionHistory.joinToString("\n---\n")
+                    ),
                     onConnect = { conversationId ->
                         Log.i(TAG, "✓ Connected: $conversationId")
+                        recordHeartbeat("connect")
                         updateNotification("🎙️ Listening...")
                         broadcastStatus("connected")
-                        
-                        // ALWAYS send an initial message to kickstart the conversation
-                        val initialMessage = pendingStartMessage ?: generateInitialGreeting()
-                        sendUpdate(initialMessage)
-                        Log.d(TAG, "✓ Sent initial message")
-                        pendingStartMessage = null
                         
                         // now send any pending context
                         pendingTopics?.let {
@@ -174,6 +218,7 @@ class VoiceAgentService : Service() {
                     onStatusChange = { status ->
                         Log.d(TAG, "Status: $status")
                         val statusStr = status.toString().lowercase()
+                        recordHeartbeat("status:$statusStr")
                         
                         val notifText = when {
                             statusStr.contains("connected") -> "🎙️ Listening..."
@@ -191,6 +236,7 @@ class VoiceAgentService : Service() {
                     },
                     onModeChange = { mode ->
                         Log.d(TAG, "Mode: $mode")
+                        recordHeartbeat("mode:${mode.toString().lowercase()}")
                         val notifText = when {
                             mode.toString().lowercase().contains("speaking") -> "🤖 Agent speaking..."
                             mode.toString().lowercase().contains("listening") -> "🎙️ Listening..."
@@ -203,14 +249,19 @@ class VoiceAgentService : Service() {
                         if (score > 0.5f) {
                             Log.d(TAG, "Voice detected: $score")
                         }
+                        recordHeartbeat("vad")
                     },
                     onMessage = { source, messageJson ->
                         Log.d(TAG, "Message from $source: ${messageJson.take(500)}")
-                        // broadcast agent responses to UI
+                        recordHeartbeat("message:$source")
+                        // broadcast agent responses to UI and track for history
                         if (source == "agent") {
                             try {
                                 val msg = JSONObject(messageJson).optString("message", "")
                                 if (msg.isNotEmpty()) {
+                                    // Record agent message for interaction summary
+                                    currentSessionMessages.add("Agent: $msg")
+                                    
                                     val intent = Intent(ACTION_AI_LOG).apply {
                                         putExtra(EXTRA_AI_MSG, "🤖 Agent: $msg")
                                     }
@@ -218,6 +269,16 @@ class VoiceAgentService : Service() {
                                 }
                             } catch (e: Exception) {
                                 Log.w(TAG, "Failed to parse agent message: ${e.message}")
+                            }
+                        } else if (source == "driver") {
+                            // Also track driver responses
+                            try {
+                                val msg = JSONObject(messageJson).optString("message", "")
+                                if (msg.isNotEmpty()) {
+                                    currentSessionMessages.add("Driver: $msg")
+                                }
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Failed to parse driver message: ${e.message}")
                             }
                         }
                     },
@@ -286,7 +347,7 @@ class VoiceAgentService : Service() {
     }
 
     private fun stopVoiceSession() {
-        Log.i(TAG, "🛑 Stopping voice session...")
+        Log.i(TAG, "🛑 Stopping voice session (user pressed stop button)...")
         isRunning = false
         
         try {
@@ -302,54 +363,97 @@ class VoiceAgentService : Service() {
                     } finally {
                         session = null
                         // Trigger end of interaction cleanup (guard prevents double calls)
+                        Log.d(TAG, "Calling endInteraction from stopVoiceSession finally block")
                         endInteraction()
                     }
                 }
             } else {
-                Log.d(TAG, "No active session to end")
+                Log.d(TAG, "No active session to end, calling endInteraction directly")
                 endInteraction()
             }
         } catch (e: Exception) {
             Log.e(TAG, "Stop error: ${e.message}", e)
-            stopSelf()
+            // Ensure cleanup happens even if error occurs
+            endInteraction()
         }
     }
 
     private fun endInteraction() {
+        Log.i(TAG, "════════════════════════════════════════════════════════")
+        Log.i(TAG, "📍 endInteraction() CRITICAL CLEANUP ROUTINE STARTING")
+        Log.i(TAG, "════════════════════════════════════════════════════════")
+        
         if (interactionEnded) {
-            Log.d(TAG, "Interaction already ended, skipping duplicate cleanup")
+            Log.w(TAG, "⚠️ GUARD: Interaction already ended, skipping duplicate cleanup")
             return
         }
         interactionEnded = true
+        Log.i(TAG, "✅ GUARD SET: interactionEnded=true - proceeding with cleanup...")
+
+        // Stop heartbeat monitor now that we're ending
+        heartbeatJob?.cancel()
+        heartbeatJob = null
         
-        Log.i(TAG, "🎙️ End of interaction - resuming Spotify and cleaning up...")
+        // Log state before cleanup
+        Log.d(TAG, "Spotify manager initialized: ${spotifyManager != null}")
+        Log.d(TAG, "Session exists: ${session != null}")
+        
+        try {
+            // Record interaction summary to history (for mid-drive interactions only)
+            if (currentInteractionType != VoiceAgentTrigger.INTERACTION_TYPE_START_DRIVE && currentSessionMessages.isNotEmpty()) {
+                val summary = currentSessionMessages.joinToString("\n")
+                interactionHistory.add(summary)
+                Log.i(TAG, "📝 Added interaction summary to history (total interactions: ${interactionHistory.size})")
+                Log.d(TAG, "Summary: $summary")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error recording interaction summary: ${e.message}")
+        }
+        
+        Log.i(TAG, "🎙️ CRITICAL CLEANUP: Start resuming Spotify and finalizing...")
+        
+        // Launch async cleanup but ensure it starts
         serviceScope.launch {
+            Log.i(TAG, "🔄 Cleanup coroutine started")
+            
+            // HIGHEST PRIORITY: Resume Spotify
             try {
-                // Resume Spotify playback if it was playing before
+                Log.i(TAG, "🎵 PRIORITY: Calling spotifyManager.resumeIfNeeded()...")
+                Log.d(TAG, "About to call: spotifyManager.resumeIfNeeded()")
                 spotifyManager.resumeIfNeeded()
-                Log.i(TAG, "✓ Spotify resumed")
+                Log.i(TAG, "✅ SUCCESS: spotifyManager.resumeIfNeeded() returned (music should resume now)")
             } catch (e: Exception) {
-                Log.w(TAG, "Failed to resume Spotify: ${e.message}")
+                Log.e(TAG, "❌ FAILED: Resume Spotify error: ${e.message}", e)
             }
             
+            // Small delay to let Spotify actually start
+            kotlinx.coroutines.delay(500)
+            
+            // Clean up session
             try {
-                // Clean up session
+                Log.d(TAG, "Ending ElevenLabs session...")
                 session?.endSession()
                 session = null
-                Log.i(TAG, "✓ Session cleaned up")
+                Log.i(TAG, "✓ Session ended")
             } catch (e: Exception) {
-                Log.e(TAG, "Error cleaning up session: ${e.message}")
+                Log.e(TAG, "Error ending session: ${e.message}")
             }
             
             // Broadcast interaction end event
-            val intent = Intent(ACTION_AI_LOG).apply {
-                putExtra(EXTRA_AI_MSG, "✓ Interaction ended")
+            try {
+                Log.d(TAG, "Broadcasting interaction end event...")
+                val intent = Intent(ACTION_AI_LOG).apply {
+                    putExtra(EXTRA_AI_MSG, "✓ Interaction ended")
+                }
+                sendBroadcast(intent)
+                Log.i(TAG, "✓ Broadcast sent")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error broadcasting: ${e.message}")
             }
-            sendBroadcast(intent)
             
-            // Stop the foreground service
-            Log.i(TAG, "Stopping service...")
-            stopSelf()
+            Log.i(TAG, "════════════════════════════════════════════════════════")
+            Log.i(TAG, "✅ CLEANUP ROUTINE COMPLETE - All critical steps executed")
+            Log.i(TAG, "════════════════════════════════════════════════════════")
         }
     }
 
@@ -361,6 +465,27 @@ class VoiceAgentService : Service() {
             putExtra(EXTRA_AI_MSG, text)
         }
         sendBroadcast(intent)
+    }
+
+    private fun recordHeartbeat(source: String) {
+        lastHeartbeatMs = System.currentTimeMillis()
+        Log.d(TAG, "Heartbeat updated from $source")
+    }
+
+    private fun startHeartbeatMonitor() {
+        heartbeatJob?.cancel()
+        heartbeatJob = serviceScope.launch {
+            while (isRunning && !interactionEnded) {
+                kotlinx.coroutines.delay(2000)
+                val elapsed = System.currentTimeMillis() - lastHeartbeatMs
+                if (elapsed > HEARTBEAT_TIMEOUT_MS) {
+                    Log.w(TAG, "⏱️ No heartbeat for ${elapsed}ms - triggering endInteraction()")
+                    isRunning = false
+                    endInteraction()
+                    break
+                }
+            }
+        }
     }
 
     private fun createNotificationChannel() {
@@ -403,18 +528,45 @@ class VoiceAgentService : Service() {
     }
 
     private fun playIntroChime() {
+        Log.i(TAG, "🔔🔔🔔 playIntroChime() STARTING - THIS SHOULD PLAY A SOUND 🔔🔔🔔")
         try {
-            // Use ToneGenerator to play a pleasant notification chime
-            // Two tones: a rising chime effect
-            val toneGen = android.media.ToneGenerator(android.media.AudioManager.STREAM_NOTIFICATION, 100)
-            toneGen.startTone(android.media.ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 200) // 200ms
-            Thread.sleep(250)
-            toneGen.startTone(android.media.ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 200)
-            Thread.sleep(200)
-            toneGen.release()
-            Log.i(TAG, "✓ Intro chime played")
+            // Request audio focus first
+            val audioManager = getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+            Log.d(TAG, "Requesting audio focus for notification stream...")
+            val result = audioManager.requestAudioFocus(
+                null,
+                android.media.AudioManager.STREAM_NOTIFICATION,
+                android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK
+            )
+            Log.d(TAG, "Audio focus request returned: $result")
+            
+            if (result == android.media.AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+                Log.i(TAG, "✅ Audio focus GRANTED, creating ToneGenerator...")
+                val toneGen = android.media.ToneGenerator(android.media.AudioManager.STREAM_NOTIFICATION, 100)
+                Log.i(TAG, "✅ ToneGenerator created")
+                
+                // Play two rising tones
+                Log.i(TAG, "🔔 Playing FIRST tone (200ms)...")
+                toneGen.startTone(android.media.ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 200)
+                Thread.sleep(250)
+                Log.i(TAG, "✓ First tone completed")
+                
+                Log.i(TAG, "🔔 Playing SECOND tone (200ms)...")
+                toneGen.startTone(android.media.ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 200)
+                Thread.sleep(100)
+                Log.i(TAG, "✓ Second tone completed")
+                
+                toneGen.release()
+                Log.i(TAG, "✓ ToneGenerator released")
+                
+                // Abandon audio focus
+                audioManager.abandonAudioFocus(null)
+                Log.i(TAG, "✅✅✅ CHIME PLAYED SUCCESSFULLY - SHOULD HAVE HEARD TWO TONES ✅✅✅")
+            } else {
+                Log.e(TAG, "❌❌❌ AUDIO FOCUS DENIED (result=$result) - CHIME WILL NOT PLAY ❌❌❌")
+            }
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to play intro chime: ${e.message}")
+            Log.e(TAG, "❌❌❌ EXCEPTION IN CHIME: ${e.message}", e)
         }
     }
 
@@ -432,18 +584,34 @@ class VoiceAgentService : Service() {
     }
 
     override fun onDestroy() {
-        Log.i(TAG, "Service destroyed")
-        serviceScope.launch {
-            try {
-                session?.endSession()
-                session = null
-            } catch (e: Exception) {
-                Log.e(TAG, "Cleanup error: ${e.message}")
-            }
+        Log.i(TAG, "🛑 ⚠️ SERVICE DESTROYED - GUARANTEED CLEANUP TRIGGERED ⚠️")
+        Log.i(TAG, "Reason: Service exiting for ANY reason (stop, crash, memory pressure, system kill, etc.)")
+        
+        try {
+            // MUST call endInteraction() - this is the ONLY guaranteed cleanup hook
+            // onDestroy() fires EVERY TIME the service exits, no matter the reason
+            Log.i(TAG, "Calling endInteraction() from onDestroy()...")
+            
+            // Call the full interaction cleanup (blocking call to ensure it starts)
+            endInteraction()
+            Log.i(TAG, "✓ endInteraction() initiated in onDestroy")
+            
+            // CRITICAL: Wait for cleanup coroutine to complete before cancelling scope
+            // This ensures Spotify resume and other async cleanup actually happens
+            Log.i(TAG, "⏳ Waiting 1 second for cleanup coroutine to complete...")
+            Thread.sleep(1000)
+            Log.i(TAG, "✓ Cleanup coroutine should have completed")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Unexpected error in onDestroy: ${e.message}", e)
+        } finally {
+            Log.i(TAG, "🛑 Cancelling scope and stopping service...")
+            // Now safe to cancel scope - cleanup is done
+            serviceScope.cancel()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            super.onDestroy()
+            Log.i(TAG, "✅ Service onDestroy() fully completed")
         }
-        serviceScope.cancel()
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder = VoiceAgentBinder()
