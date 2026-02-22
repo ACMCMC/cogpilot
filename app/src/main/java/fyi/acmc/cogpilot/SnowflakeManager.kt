@@ -253,6 +253,42 @@ Variation seed: $seed
         out
     }
 
+    suspend fun getLastTripSummary(userId: String): String = withContext(Dispatchers.IO) {
+        val sql = "SELECT last_trip_summary FROM USERS WHERE user_id = '$userId'"
+        val result = sqlApi.execute(sql)
+        val data = result.optJSONArray("data")
+        val summary = data?.optJSONArray(0)?.optString(0, "") ?: ""
+        Log.d("SnowflakeManager", "Last trip summary for $userId: $summary")
+        summary
+    }
+
+    suspend fun updateLastTripSummary(userId: String, summary: String) = withContext(Dispatchers.IO) {
+        val safeSummary = summary.replace("'", "''")
+        val sql = "UPDATE USERS SET last_trip_summary = '$safeSummary' WHERE user_id = '$userId'"
+        val result = sqlApi.execute(sql)
+        Log.i("SnowflakeManager", "Updated last trip summary for $userId")
+    }
+
+    suspend fun generateTripSummary(messages: List<String>): String = withContext(Dispatchers.IO) {
+        if (messages.isEmpty()) return@withContext ""
+        val prompt = """Summarize this driving session into a single concise sentence for the driver's memory. 
+            Focus on their fatigue state and how they responded to the copilot. 
+            Messages: ${messages.joinToString("\n")}""".trimIndent().replace("\n", " ")
+            
+        val sql = """
+            SELECT SNOWFLAKE.CORTEX.COMPLETE(
+                'snowflake-arctic',
+                '[{"role": "user", "content": "${prompt.replace("\"", "\\\"")}"}]'
+            ) as response
+        """.trimIndent()
+        
+        val result = sqlApi.execute(sql)
+        val data = result.optJSONArray("data")
+        val summary = data?.optJSONArray(0)?.optString(0, "") ?: ""
+        Log.i("SnowflakeManager", "Generated trip summary: $summary")
+        summary
+    }
+
     fun close() {
         Log.i("SnowflakeManager", "Session closed")
     }

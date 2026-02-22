@@ -16,6 +16,7 @@ object VoiceAgentTrigger {
     // Interaction type constants
     const val INTERACTION_TYPE_START_DRIVE = "start_drive"
     const val INTERACTION_TYPE_CHECK_IN = "check_in"
+    const val INTERACTION_TYPE_PRE_TRIP = "pre_trip"
     
     // Extra key constants shared between caller and service
     const val EXTRA_SOURCE        = "extra_source"

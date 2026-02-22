@@ -43,6 +43,8 @@ class RiskDecisionEngine(private val context: Context) {
     private val responseLatencyHistory = ConcurrentLinkedQueue<Float>()  // ms, last 10
     private val speedHistory = ConcurrentLinkedQueue<Float>()  // mph, last 30
     private val riskStateHistory = ConcurrentLinkedQueue<RiskState>()  // last 5 decisions
+    private var cumulativeDriveMinutes: Int = 0 // Persistent across trips in same session
+    private var lastDecisionTime: Long = 0L
 
     // Current session data
     private var lastLocation: Location? = null
@@ -73,6 +75,7 @@ class RiskDecisionEngine(private val context: Context) {
     fun startTrip(userId: String, sleepHours: Int) {
         Log.i(TAG, "🚗 Trip started: $userId, sleep=$sleepHours hrs")
         tripStartTime = System.currentTimeMillis()
+        lastDecisionTime = tripStartTime
         sleepHoursToday = sleepHours
         tripStartVocalEnergy = 0.8f
         clearHistory()
@@ -85,10 +88,15 @@ class RiskDecisionEngine(private val context: Context) {
     }
 
     fun stopTrip() {
-        Log.i(TAG, "🛑 Trip stopped")
+        Log.i(TAG, "🛑 Trip stopped. Total cumulative minutes: $cumulativeDriveMinutes")
         clearHistory()
         currentRiskState = RiskState.STABLE
         currentInteractionLevel = 0
+    }
+
+    fun setSleepHours(hours: Int) {
+        Log.i(TAG, "💤 Sleep hours updated to $hours")
+        sleepHoursToday = hours
     }
 
     // ========================================================================
@@ -179,7 +187,16 @@ class RiskDecisionEngine(private val context: Context) {
 
     private fun evaluateRiskState() {
         // Gather current signals
-        val driveMinutes = ((System.currentTimeMillis() - tripStartTime) / 60_000).toInt()
+        val now = System.currentTimeMillis()
+        val sessionMinutes = ((now - tripStartTime) / 60_000).toInt()
+        
+        // Update cumulative fatigue
+        val deltaMinutes = ((now - lastDecisionTime) / 60_000).toInt()
+        if (deltaMinutes > 0) {
+            cumulativeDriveMinutes += deltaMinutes
+            lastDecisionTime = now
+        }
+
         val currentVocalEnergyTrend = calculateVocalEnergyTrend()
         val currentLatencyTrend = calculateLatencyTrend()
         val currentSpeedVariance = calculateSpeedVariance()
@@ -202,11 +219,11 @@ class RiskDecisionEngine(private val context: Context) {
 
             // EMERGING: early signs of declining performance
             (lastVocalEnergy < 0.75f || lastResponseLatencyMs > 1000f ||
-                    (driveMinutes > 45 && circadianWindow == CircadianWindow.CIRCADIAN_LOW) ||
+                    (sessionMinutes > 45 && circadianWindow == CircadianWindow.CIRCADIAN_LOW) ||
                     isRiskTriggerActive()) -> {
 
                 // Modify thresholds based on driver history
-                val modifier = calculateThresholdModifier(driveMinutes)
+                val modifier = calculateThresholdModifier(sessionMinutes)
                 if (lastVocalEnergy < (0.75f - modifier) || lastResponseLatencyMs > (1000f - modifier * 500)) {
                     RiskState.EMERGING
                 } else {
@@ -219,7 +236,7 @@ class RiskDecisionEngine(private val context: Context) {
         }
 
         // Determine interaction level based on risk state
-        val newInteractionLevel = determineInteractionLevel(newRiskState, driveMinutes)
+        val newInteractionLevel = determineInteractionLevel(newRiskState, sessionMinutes)
 
         // Update state
         if (newRiskState != currentRiskState || newInteractionLevel != currentInteractionLevel) {
@@ -227,7 +244,7 @@ class RiskDecisionEngine(private val context: Context) {
             currentInteractionLevel = newInteractionLevel
 
             val reason = buildDecisionRationale(
-                newRiskState, newInteractionLevel, driveMinutes,
+                newRiskState, newInteractionLevel, sessionMinutes,
                 currentVocalEnergyTrend, currentLatencyTrend
             )
 
@@ -275,15 +292,21 @@ class RiskDecisionEngine(private val context: Context) {
         }
     }
 
-    private fun calculateThresholdModifier(driveMinutes: Int): Float {
+    private fun calculateThresholdModifier(sessionMinutes: Int): Float {
         var modifier = 0f
 
         // Sleep debt
-        if (sleepHoursToday < 5) modifier += 0.10f  // lower thresholds by 0.10
-        if (sleepHoursToday < 4) modifier += 0.15f
+        if (sleepHoursToday < 6) modifier += 0.05f
+        if (sleepHoursToday < 5) modifier += 0.10f
+        if (sleepHoursToday < 4) modifier += 0.20f
 
-        // Long drive
-        if (driveMinutes > 60) modifier += 0.05f
+        // Session fatigue
+        if (sessionMinutes > 60) modifier += 0.05f
+        if (sessionMinutes > 120) modifier += 0.10f
+
+        // Daily cumulative fatigue
+        if (cumulativeDriveMinutes > 180) modifier += 0.05f // 3 hours
+        if (cumulativeDriveMinutes > 300) modifier += 0.10f // 5 hours
 
         // High-risk history
         if (driverProfile?.riskLevel == RiskLevel.HIGH) modifier += 0.08f
@@ -403,6 +426,16 @@ class RiskDecisionEngine(private val context: Context) {
             vocalEnergyTrend = calculateVocalEnergyTrend(),
             latencyTrend = calculateLatencyTrend(),
             speedVariance = calculateSpeedVariance()
+        )
+    }
+
+    fun getDriverProfileDetails(): Map<String, String> {
+        val profile = driverProfile ?: return emptyMap()
+        return mapOf(
+            "triggers" to profile.riskTriggers.joinToString(", "),
+            "levers" to profile.effectiveLevers.joinToString(", "),
+            "boundary" to profile.boundary,
+            "rejection_pattern" to profile.rejectionPattern
         )
     }
 
