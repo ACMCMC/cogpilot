@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.media.MediaPlayer
 import android.os.Binder
 import android.os.IBinder
 import android.util.Log
@@ -95,15 +96,21 @@ class VoiceAgentService : Service() {
             val trafficRatio = if (intent.hasExtra(VoiceAgentTrigger.EXTRA_TRAFFIC_RATIO)) intent.getFloatExtra(VoiceAgentTrigger.EXTRA_TRAFFIC_RATIO, -1f) else null
             val tripStartMs  = if (intent.hasExtra(VoiceAgentTrigger.EXTRA_TRIP_START_MS)) intent.getLongExtra(VoiceAgentTrigger.EXTRA_TRIP_START_MS,  -1L) else null
 
-            pendingDrivingContext = buildDrivingContextString(
-                speedMph     = speedMph?.takeIf { it >= 0 },
-                roadTypes    = roadTypes,
-                speedLimit   = speedLimit?.takeIf { it >= 0 },
-                trafficRatio = trafficRatio?.takeIf { it >= 0 },
-                tripStartMs  = tripStartMs?.takeIf { it > 0 }
-            )
-            Log.d(TAG, "Queued driving context: $pendingDrivingContext")
-        }
+            serviceScope.launch {
+                pendingDrivingContext = buildDrivingContextString(
+                    speedMph     = speedMph?.takeIf { it >= 0 },
+                    roadTypes    = roadTypes,
+                    speedLimit   = speedLimit?.takeIf { it >= 0 },
+                    trafficRatio = trafficRatio?.takeIf { it >= 0 },
+                    tripStartMs  = tripStartMs?.takeIf { it > 0 },
+                    spotify      = spotifyManager,
+                    maps         = MapsRoadsClient(this@VoiceAgentService),
+                    lat          = liveLat,
+                    lon          = liveLon
+                )
+                Log.d(TAG, "Queued driving context: $pendingDrivingContext")
+            }
+        } // <--- Added missing brace here
         
         when (intent?.action) {
             ACTION_START -> {
@@ -126,7 +133,7 @@ class VoiceAgentService : Service() {
         return START_STICKY
     }
 
-    private fun startVoiceSession() {
+    fun startVoiceSession() {
         if (isRunning) {
             Log.w(TAG, "Already running")
             return
@@ -148,6 +155,15 @@ class VoiceAgentService : Service() {
                 
                 // Fade out Spotify smoothly, then pause, before starting the agent conversation.
                 spotifyManager.fadeOutAndPause()
+
+                // Play the chime-in sound before starting the agent
+                try {
+                    val player = MediaPlayer.create(this@VoiceAgentService, R.raw.chime_in)
+                    player?.setOnCompletionListener { it.release() }
+                    player?.start()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to play chime_in", e)
+                }
 
                 // Build driver context to inject at conversation start.
                 // Use a readable display name (replace underscores with spaces, title-case).
@@ -396,7 +412,7 @@ class VoiceAgentService : Service() {
         }
     }
 
-    private fun stopVoiceSession() {
+    fun stopVoiceSession() {
         Log.i(TAG, "🛑 Stopping voice session...")
         isRunning = false
         
@@ -430,12 +446,16 @@ class VoiceAgentService : Service() {
      * Builds a plain-English driving context string from live telemetry.
      * Deliberately natural so the agent can weave it in without sounding like surveillance.
      */
-    private fun buildDrivingContextString(
+    suspend fun buildDrivingContextString(
         speedMph: Float?,
         roadTypes: String?,
         speedLimit: Float?,
         trafficRatio: Float?,
-        tripStartMs: Long?
+        tripStartMs: Long?,
+        spotify: SpotifyManager,
+        maps: MapsRoadsClient,
+        lat: Float?,
+        lon: Float?
     ): String? {
         val parts = mutableListOf<String>()
 
@@ -477,18 +497,33 @@ class VoiceAgentService : Service() {
             parts += trafficDesc
         }
 
+        // Location
+        if (lat != null && lon != null) {
+            val address = maps.reverseGeocode(lat.toDouble(), lon.toDouble())
+            parts += "currently located at $address"
+        }
+
+        // Media Playback
+        val np = spotify.getNowPlaying()
+        if (np.isSuccess) {
+            val trackInfo = np.getOrNull()
+            if (!trackInfo.isNullOrBlank()) {
+                parts += "listening to $trackInfo"
+            }
+        }
+
         if (parts.isEmpty()) return null
-        return "[CURRENT DRIVING CONDITIONS]\nThe driver ${parts.joinToString("; ")}."
+        return "[CURRENT STATUS]\nThe driver ${parts.joinToString("; ")}."
     }
 
-    private fun sendUpdate(text: String) {
+    fun sendUpdate(text: String) {
         Log.d(TAG, "model input: $text")
         session?.sendContextualUpdate(text)
         // broadcast to UI as a context entry (no source label)
         broadcastAiLog(text, source = null)
     }
 
-    private fun broadcastAiLog(text: String, source: String?) {
+    fun broadcastAiLog(text: String, source: String?) {
         val intent = Intent(ACTION_AI_LOG).apply {
             putExtra(EXTRA_AI_MSG, text)
             source?.let { putExtra(EXTRA_MSG_SOURCE, it) }
@@ -496,7 +531,7 @@ class VoiceAgentService : Service() {
         sendBroadcast(intent)
     }
 
-    private fun createNotificationChannel() {
+    fun createNotificationChannel() {
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
@@ -511,7 +546,7 @@ class VoiceAgentService : Service() {
         }
     }
 
-    private fun createNotification(text: String): Notification {
+    fun createNotification(text: String): Notification {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("CogPilot Voice Agent")
             .setContentText(text)
@@ -521,13 +556,13 @@ class VoiceAgentService : Service() {
             .build()
     }
 
-    private fun updateNotification(text: String) {
+    fun updateNotification(text: String) {
         val manager = getSystemService(NotificationManager::class.java)
         val notification = createNotification(text)
         manager.notify(NOTIFICATION_ID, notification)
     }
 
-    private fun broadcastStatus(status: String) {
+    fun broadcastStatus(status: String) {
         val intent = Intent(ACTION_STATUS_CHANGE).apply {
             putExtra(EXTRA_STATUS, status)
             setPackage(packageName)
