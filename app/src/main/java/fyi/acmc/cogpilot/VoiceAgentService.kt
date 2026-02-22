@@ -226,9 +226,16 @@ $historyContext$calendarContextStr"""
                 
                 val roadType = _riskEngine?.getRoadType() ?: RoadType.MIXED
                 val traffic = _riskEngine?.getTrafficCondition() ?: TrafficCondition.MODERATE
+                val currentTimeStr = java.text.SimpleDateFormat("HH:mm", java.util.Locale.US).format(java.util.Date())
+                val riskStateStr = info?.riskState?.toString() ?: "STABLE"
+                val interactionLevel = info?.interactionLevel ?: 0
 
                 val systemContext = """
                     |YOU ARE: The cognitive co-pilot for $driverName.
+                    |
+                    |ENVIRONMENTAL CONTEXT:
+                    |- Current Time: $currentTimeStr
+                    |- Interaction Type: $currentInteractionType
                     |
                     |DRIVER PROFILE:
                     |- Name: $driverName
@@ -246,6 +253,7 @@ $historyContext$calendarContextStr"""
                     |- Destination Context: ${if (calendarContextStr.isNotBlank()) "Heading towards calendar events" else "General drive"}
                     |
                     |CURRENT TELEMETRY (TRENDS):
+                    |- Attention State: $riskStateStr (Interaction Level $interactionLevel)
                     |- Vocal Energy: ${String.format("%.2f", info?.vocalEnergyTrend ?: 0.8f)} (Baseline: 0.8)
                     |- Response Latency: ${info?.latencyTrend ?: 500}ms (Delayed if > 1200ms)
                     |- Driving Time: ${info?.driveMinutes ?: 0} min
@@ -324,7 +332,10 @@ $historyContext$calendarContextStr"""
                     ),
                     dynamicVariables = mapOf(
                         "driver_name" to driverName,
+                        "current_time" to currentTimeStr,
                         "interaction_type" to currentInteractionType,
+                        "risk_state" to riskStateStr,
+                        "attention_level" to interactionLevel,
                         "road_type" to roadType.toString(),
                         "traffic_condition" to traffic.toString(),
                         "driver_interests" to (profile["interests"] ?: ""),

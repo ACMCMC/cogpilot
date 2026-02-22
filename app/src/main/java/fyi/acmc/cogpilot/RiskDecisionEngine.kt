@@ -205,34 +205,32 @@ class RiskDecisionEngine(private val context: Context) {
         val currentLatencyTrend = calculateLatencyTrend()
         val currentSpeedVariance = calculateSpeedVariance()
 
-        // Calculate circadian window
+        // Calculate circadian window and weighted modifier
         circadianWindow = calculateCircadianWindow()
+        val envModifier = calculateThresholdModifier(sessionMinutes)
 
         // Apply thresholds to determine risk state
         val newRiskState = when {
-            // CRITICAL: immediate danger signals
-            lastVocalEnergy < 0.35f || lastResponseLatencyMs > 3000f || lastUserResponse == UserResponseType.NO_RESPONSE -> {
+            // CRITICAL: immediate danger signals - reduced tolerance if modifier is high
+            lastVocalEnergy < (0.35f - (envModifier * 0.1f)) || 
+            lastResponseLatencyMs > (3000f - (envModifier * 500f)) || 
+            lastUserResponse == UserResponseType.NO_RESPONSE -> {
                 RiskState.CRITICAL
             }
 
             // WINDOW: sustained fatigue with environmental factors
-            (lastVocalEnergy < 0.55f || lastResponseLatencyMs > 1800f ||
-                    (currentRiskState == RiskState.EMERGING && riskStateHistory.toList().count { s -> s == RiskState.EMERGING } > 15)) -> {
+            (lastVocalEnergy < (0.55f - envModifier) || 
+             lastResponseLatencyMs > (1800f - (envModifier * 300f)) ||
+             (currentRiskState == RiskState.EMERGING && riskStateHistory.toList().count { s -> s == RiskState.EMERGING } > (15 - (envModifier * 5).toInt()))) -> {
                 RiskState.WINDOW
             }
 
-            // EMERGING: early signs of declining performance
-            (lastVocalEnergy < 0.75f || lastResponseLatencyMs > 1000f ||
-                    (sessionMinutes > 45 && circadianWindow == CircadianWindow.CIRCADIAN_LOW) ||
-                    isRiskTriggerActive()) -> {
-
-                // Modify thresholds based on driver history
-                val modifier = calculateThresholdModifier(sessionMinutes)
-                if (lastVocalEnergy < (0.75f - modifier) || lastResponseLatencyMs > (1000f - modifier * 500)) {
-                    RiskState.EMERGING
-                } else {
-                    RiskState.STABLE
-                }
+            // EMERGING: early signs of declining performance - highly affected by environmental weights
+            (lastVocalEnergy < (0.75f - envModifier) || 
+             lastResponseLatencyMs > (1000f - (envModifier * 200f)) ||
+             (sessionMinutes > 45 && circadianWindow == CircadianWindow.CIRCADIAN_LOW) ||
+             isRiskTriggerActive()) -> {
+                RiskState.EMERGING
             }
 
             // STABLE: all signals nominal
@@ -288,34 +286,62 @@ class RiskDecisionEngine(private val context: Context) {
         val now = java.util.Calendar.getInstance()
         val hour = now.get(java.util.Calendar.HOUR_OF_DAY)
 
-        // Circadian low: 14:00-17:00 and 23:00-06:00
-        return if ((hour in 14..17) || (hour in 23..23) || (hour in 0..6)) {
-            CircadianWindow.CIRCADIAN_LOW
-        } else {
-            CircadianWindow.NORMAL
+        // Circadian low windows: 
+        // 02:00-05:00 (Human body's primary sleep pressure peak)
+        // 14:00-16:00 (Post-prandial dip/secondary sleep pressure)
+        return when (hour) {
+            in 2..5 -> CircadianWindow.CIRCADIAN_LOW
+            in 14..16 -> CircadianWindow.CIRCADIAN_LOW
+            in 23..23, in 0..1, in 6..6 -> CircadianWindow.NORMAL // Early/late night
+            else -> CircadianWindow.NORMAL
         }
     }
 
     private fun calculateThresholdModifier(sessionMinutes: Int): Float {
         var modifier = 0f
 
-        // Sleep debt
+        // 1. Driving Time (Duration Weight)
+        // Monotony increases linearly after 45 minutes
+        if (sessionMinutes > 45) modifier += 0.05f
+        if (sessionMinutes > 90) modifier += 0.10f
+        if (sessionMinutes > 150) modifier += 0.15f
+
+        // 2. Time of Day (Circadian Weight)
+        if (circadianWindow == CircadianWindow.CIRCADIAN_LOW) {
+            modifier += 0.12f // Significant bump during danger windows
+        }
+
+        // 3. Traffic Condition (Complexity Weight)
+        // High traffic ignores monotony but increases cognitive load, reducing allowed latency
+        when (trafficCondition) {
+            TrafficCondition.HEAVY -> modifier += 0.08f
+            TrafficCondition.MODERATE -> modifier += 0.03f
+            TrafficCondition.LIGHT -> modifier += 0f
+        }
+
+        // 4. Road Complexity (Environment Weight)
+        // Highway driving is more monotonous than mixed or urban roads
+        when (currentRoadType) {
+            RoadType.HIGHWAY -> modifier += 0.07f
+            RoadType.SUBURBAN -> modifier += 0.02f
+            RoadType.URBAN -> modifier -= 0.05f // Cities keep people alert
+            RoadType.MIXED -> modifier += 0f
+        }
+
+        // 5. Sleep Debt (Baseline Weight)
         if (sleepHoursToday < 6) modifier += 0.05f
-        if (sleepHoursToday < 5) modifier += 0.10f
-        if (sleepHoursToday < 4) modifier += 0.20f
+        if (sleepHoursToday < 5) modifier += 0.12f
+        if (sleepHoursToday < 4) modifier += 0.25f
 
-        // Session fatigue
-        if (sessionMinutes > 60) modifier += 0.05f
-        if (sessionMinutes > 120) modifier += 0.10f
-
-        // Daily cumulative fatigue
-        if (cumulativeDriveMinutes > 180) modifier += 0.05f // 3 hours
-        if (cumulativeDriveMinutes > 300) modifier += 0.10f // 5 hours
-
-        // High-risk history
+        // 6. Risk Level (Baseline Weight)
         if (driverProfile?.riskLevel == RiskLevel.HIGH) modifier += 0.08f
 
-        return modifier
+        // 7. Interaction Analysis (Future: Average words per interaction length)
+        // Placeholder for avg_words_per_duration calculation
+        // val avgInteractionEfficiency = calculateInteractionEfficiency()
+        // modifier += (1.0f - avgInteractionEfficiency) * 0.1f
+
+        return modifier.coerceIn(0f, 0.45f) // Cap the modifier to avoid over-sensitivity
     }
 
     private fun isRiskTriggerActive(): Boolean {
@@ -506,11 +532,11 @@ enum class CircadianWindow {
 }
 
 enum class RoadType {
-    URBAN_HIGH, MIXED, HIGHWAY
+    URBAN, SUBURBAN, MIXED, HIGHWAY
 }
 
 enum class TrafficCondition {
-    FREE_FLOW, MODERATE, CONGESTED, GRID_LOCK
+    LIGHT, MODERATE, HEAVY
 }
 
 enum class UserResponseType {

@@ -38,6 +38,7 @@ class MainActivity : AppCompatActivity() {
     private var lastAutoTriggerTime = 0L
     private var lastRiskScore = 0f
     private var currentUserId: String = "aldan_creo"
+    private var sustainedSpeedStartTime = 0L
 
     // Live driving state — updated by location callback, passed to agent on trigger
     private var lastRoadContext: RoadContext? = null
@@ -235,20 +236,17 @@ class MainActivity : AppCompatActivity() {
             
             // Check for transition from parking (false) to driving (true)
             if (newIsDrivingMode && !isDrivingMode) {
-                Log.i("CogPilot", "🚗 Switched to driving mode, proactively checking in with driver.")
+                Log.i("CogPilot", "🚗 Switched to driving mode, proactively starting drive sequence.")
                 if (!voiceActive) {
                     val now = System.currentTimeMillis()
-                    // Don't auto-trigger if we just started the app in driving mode right away 
-                    // (unless we want to, but the intent here is a transition). Wait, the user said "whenever the driving mode changes".
-                    // Let's just trigger it anyway on start if they are in car, since it's friendly.
                     lastAutoTriggerTime = now
                     val rc = lastRoadContext
                     val activeSpeedMph = carSpeedMph ?: lastSpeedMph
                     VoiceAgentTrigger.start(
                         this@MainActivity,
                         driverId      = currentUserId,
-                        source        = "driving_started",
-                        interactionType = VoiceAgentTrigger.INTERACTION_TYPE_CHECK_IN,
+                        source        = "driving_mode_transition",
+                        interactionType = VoiceAgentTrigger.INTERACTION_TYPE_START_DRIVE,
                         speedMph      = activeSpeedMph.takeIf { it > 0 },
                         roadTypes     = rc?.types?.joinToString(",")?.ifBlank { null },
                         trafficRatio  = rc?.trafficRatio,
@@ -396,6 +394,21 @@ class MainActivity : AppCompatActivity() {
                             lat = lat,
                             lon = lon
                         )
+                        // Movement-based failsafe: Start drive if moving > 10mph for 5 seconds
+                        val now = System.currentTimeMillis()
+                        if (!voiceActive && speed > 10f && !isDrivingMode) {
+                            if (sustainedSpeedStartTime == 0L) {
+                                sustainedSpeedStartTime = now
+                                Log.d("CogPilot", "💨 Sustained speed detection started...")
+                            } else if (now - sustainedSpeedStartTime > 5000L) {
+                                Log.i("CogPilot", "🚀 Movement threshold met (5s > 10mph). Automatic start drive triggered.")
+                                sustainedSpeedStartTime = 0L // reset
+                                onStartDrive() // reuse the drive start logic
+                            }
+                        } else if (speed <= 3f) {
+                            sustainedSpeedStartTime = 0L // reset if we stop
+                        }
+
                         // Broadcast live telemetry to VoiceAgentService so the agent can request it anytime
                         sendBroadcast(Intent("fyi.acmc.cogpilot.voice.LOCATION_UPDATE").apply {
                             putExtra("extra_speed_mph", speed)
