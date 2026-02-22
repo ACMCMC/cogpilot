@@ -7,7 +7,9 @@ import android.app.Service
 import android.media.MediaPlayer
 import android.content.Intent
 import android.os.Binder
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -59,15 +61,15 @@ class VoiceAgentService : Service() {
     private val interactionHistory = mutableListOf<String>()
     // Track messages in current session for creating summary on end
     private val currentSessionMessages = mutableListOf<String>()
-    // Heartbeat monitoring to detect silent disconnects
-    private var lastHeartbeatMs = 0L
-    private var heartbeatJob: Job? = null
-    private val HEARTBEAT_TIMEOUT_MS = 12_000L
 
     // hold context updates until connected
     private var pendingTopics: String? = null
     private var pendingEventSummary: String? = null
     private var pendingStartMessage: String? = null
+    
+    // Keep MediaPlayer references to prevent garbage collection during playback
+    private var introMediaPlayer: MediaPlayer? = null
+    private var outroMediaPlayer: MediaPlayer? = null
 
     inner class VoiceAgentBinder : Binder() {
         fun getService(): VoiceAgentService = this@VoiceAgentService
@@ -117,8 +119,6 @@ class VoiceAgentService : Service() {
         isRunning = true
         interactionEnded = false  // Reset for new interaction
         currentSessionMessages.clear()  // Reset messages for this session
-        lastHeartbeatMs = System.currentTimeMillis()
-        startHeartbeatMonitor()
 
         serviceScope.launch {
             try {
@@ -261,7 +261,6 @@ $interactionTypeContext""".trimIndent()
                     },
                     onConnect = { conversationId ->
                         Log.i(TAG, "✓ Connected: $conversationId")
-                        recordHeartbeat("connect")
                         updateNotification("🎙️ Listening...")
                         broadcastStatus("connected")
                         
@@ -280,7 +279,6 @@ $interactionTypeContext""".trimIndent()
                     onStatusChange = { status ->
                         Log.d(TAG, "Status: $status")
                         val statusStr = status.toString().lowercase()
-                        recordHeartbeat("status:$statusStr")
                         
                         val notifText = when {
                             statusStr.contains("connected") -> "🎙️ Listening..."
@@ -300,7 +298,6 @@ $interactionTypeContext""".trimIndent()
                     },
                     onModeChange = { mode ->
                         Log.d(TAG, "Mode: $mode")
-                        recordHeartbeat("mode:${mode.toString().lowercase()}")
                         val notifText = when {
                             mode.toString().lowercase().contains("speaking") -> "🤖 Agent speaking..."
                             mode.toString().lowercase().contains("listening") -> "🎙️ Listening..."
@@ -313,11 +310,9 @@ $interactionTypeContext""".trimIndent()
                         if (score > 0.5f) {
                             Log.d(TAG, "Voice detected: $score")
                         }
-                        recordHeartbeat("vad")
                     },
                     onMessage = { source, messageJson ->
                         Log.d(TAG, "Message from $source: ${messageJson.take(500)}")
-                        recordHeartbeat("message:$source")
                         // broadcast agent responses to UI and track for history
                         if (source == "agent") {
                             try {
@@ -408,10 +403,6 @@ $interactionTypeContext""".trimIndent()
         }
         interactionEnded = true
         
-        // Stop heartbeat monitor
-        heartbeatJob?.cancel()
-        heartbeatJob = null
-        
         Log.i(TAG, "🔄 Ending interaction - cleaning up session and recording history")
         
         // Record interaction summary to history (for mid-drive interactions only)
@@ -447,27 +438,7 @@ $interactionTypeContext""".trimIndent()
         sendBroadcast(intent)
     }
 
-    private fun recordHeartbeat(source: String) {
-        lastHeartbeatMs = System.currentTimeMillis()
-        Log.d(TAG, "Heartbeat updated from $source")
-    }
-
-    private fun startHeartbeatMonitor() {
-        heartbeatJob?.cancel()
-        heartbeatJob = serviceScope.launch {
-            while (isRunning && !interactionEnded) {
-                kotlinx.coroutines.delay(2000)
-                val elapsed = System.currentTimeMillis() - lastHeartbeatMs
-                if (elapsed > HEARTBEAT_TIMEOUT_MS) {
-                    Log.w(TAG, "⏱️ No heartbeat for ${elapsed}ms - stopping service")
-                    isRunning = false
-                    stopSelf()  // Triggers onDestroy which handles all cleanup
-                    break
-                }
-            }
-        }
-    }
-
+    
     private fun createNotificationChannel() {
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
@@ -510,8 +481,13 @@ $interactionTypeContext""".trimIndent()
     private fun playIntroChime() {
         Log.i(TAG, "🔔 playIntroChime() STARTING - Playing chime_in.mp3...")
         try {
-            // Use MediaPlayer to play the chime audio file
-            val mediaPlayer = MediaPlayer()
+            // Release any existing player first
+            introMediaPlayer?.release()
+            
+            // Create new MediaPlayer as class field to prevent GC
+            introMediaPlayer = MediaPlayer()
+            val mediaPlayer = introMediaPlayer!!
+            
             val resId = resources.getIdentifier("chime_in", "raw", packageName)
             if (resId == 0) {
                 Log.e(TAG, "❌ chime_in.mp3 not found in res/raw/")
@@ -524,34 +500,48 @@ $interactionTypeContext""".trimIndent()
             afd.close()
             
             mediaPlayer.setOnPreparedListener {
-                Log.d(TAG, "MediaPlayer prepared, starting playback...")
+                Log.d(TAG, "🔔 MediaPlayer prepared, starting playback...")
                 mediaPlayer.start()
             }
             
             mediaPlayer.setOnCompletionListener {
                 Log.i(TAG, "✅ Chime playback completed")
-                mediaPlayer.release()
+                // Delay release to avoid "unhandled events" warning
+                Handler(Looper.getMainLooper()).postDelayed({
+                    mediaPlayer.release()
+                    introMediaPlayer = null
+                }, 100)
             }
             
             mediaPlayer.setOnErrorListener { mp, what, extra ->
                 Log.e(TAG, "❌ MediaPlayer error: what=$what extra=$extra")
-                mp.release()
+                Handler(Looper.getMainLooper()).postDelayed({
+                    mp.release()
+                    introMediaPlayer = null
+                }, 100)
                 true
             }
             
             Log.i(TAG, "🔔 Preparing to play chime_in.mp3...")
             mediaPlayer.prepareAsync()
-            Log.i(TAG, "✅✅✅ CHIME PLAYBACK INITIATED - Audio file will play now ✅✅✅")
+            Log.i(TAG, "✅ Chime playback initiated")
         } catch (e: Exception) {
             Log.e(TAG, "❌ Exception playing chime: ${e.message}", e)
+            introMediaPlayer?.release()
+            introMediaPlayer = null
         }
     }
 
     private fun playOutro() {
         Log.i(TAG, "🎧 playOutro() STARTING - Playing outro.mp3...")
         try {
-            // Use MediaPlayer to play the outro audio file
-            val mediaPlayer = MediaPlayer()
+            // Release any existing player first
+            outroMediaPlayer?.release()
+            
+            // Create new MediaPlayer as class field to prevent GC
+            outroMediaPlayer = MediaPlayer()
+            val mediaPlayer = outroMediaPlayer!!
+            
             val resId = resources.getIdentifier("outro", "raw", packageName)
             if (resId == 0) {
                 Log.e(TAG, "❌ outro.mp3 not found in res/raw/")
@@ -564,26 +554,30 @@ $interactionTypeContext""".trimIndent()
             afd.close()
             
             mediaPlayer.setOnPreparedListener {
-                Log.d(TAG, "Outro MediaPlayer prepared, starting playback...")
+                Log.d(TAG, "🎧 Outro MediaPlayer prepared, starting playback...")
                 mediaPlayer.start()
             }
             
             mediaPlayer.setOnCompletionListener {
                 Log.i(TAG, "✅ Outro playback completed")
                 mediaPlayer.release()
+                outroMediaPlayer = null
             }
             
             mediaPlayer.setOnErrorListener { mp, what, extra ->
                 Log.e(TAG, "❌ Outro MediaPlayer error: what=$what extra=$extra")
                 mp.release()
+                outroMediaPlayer = null
                 true
             }
             
             Log.i(TAG, "🎧 Preparing to play outro.mp3...")
             mediaPlayer.prepareAsync()
-            Log.i(TAG, "✅✅✅ OUTRO PLAYBACK INITIATED - Audio file will play now ✅✅✅")
+            Log.i(TAG, "✅ Outro playback initiated")
         } catch (e: Exception) {
             Log.e(TAG, "❌ Exception playing outro: ${e.message}", e)
+            outroMediaPlayer?.release()
+            outroMediaPlayer = null
         }
     }
 
@@ -640,8 +634,20 @@ $interactionTypeContext""".trimIndent()
         } catch (e: Exception) {
             Log.e(TAG, "Unexpected error in onDestroy: ${e.message}", e)
         } finally {
-            Log.i(TAG, "🛑 Cancelling scope and stopping service...")
-            // Now safe to cancel scope - cleanup is done
+            Log.i(TAG, "🛑 Final cleanup: releasing resources...")
+            
+            // Release MediaPlayers
+            try {
+                introMediaPlayer?.release()
+                introMediaPlayer = null
+                outroMediaPlayer?.release()
+                outroMediaPlayer = null
+                Log.d(TAG, "MediaPlayers released")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error releasing MediaPlayers: ${e.message}")
+            }
+            
+            // Cancel scope
             serviceScope.cancel()
             stopForeground(STOP_FOREGROUND_REMOVE)
             super.onDestroy()
