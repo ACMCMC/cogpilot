@@ -62,7 +62,6 @@ class CogPilotMediaService : MediaBrowserService() {
     }
 
     override fun onLoadChildren(parentId: String, result: Result<MutableList<MediaBrowser.MediaItem>>) {
-        // Return a single status item to prevent "No items" and confirm CogPilot is active
         val mediaItems = mutableListOf<MediaBrowser.MediaItem>()
         
         val engine = VoiceAgentService.riskEngine
@@ -79,20 +78,36 @@ class CogPilotMediaService : MediaBrowserService() {
         
         // Convert risk score to attention percentage (Inverse of risk)
         val attentionPercent = ((1.1f - currentScore) / 1.1f * 100).toInt().coerceIn(0, 100)
-        val stateLabel = when(currentState) {
-            RiskState.STABLE -> "All Good"
-            RiskState.EMERGING -> "Drift Detected"
-            RiskState.WINDOW -> "Check-in Required"
-            RiskState.CRITICAL -> "CAUTION"
+        
+        // Android Auto limits colors, so we use descriptive labels
+        val stateLabel = when {
+            attentionPercent >= 90 -> "Optimal Focus"
+            attentionPercent >= 75 -> "Stable"
+            attentionPercent >= 55 -> "Drift Detected"
+            attentionPercent >= 35 -> "Check-in Required"
+            else -> "CAUTION: FATIGUED"
         }
 
-        val description = MediaDescription.Builder()
-            .setMediaId("cogpilot_status")
+        // Add the primary header item showing total attention
+        val headerDesc = MediaDescription.Builder()
+            .setMediaId("cogpilot_status_header")
             .setTitle("Attention: $attentionPercent% — $stateLabel")
-            .setSubtitle(currentBreakdown)
+            .setSubtitle("Score: ${String.format("%.2f", currentScore)} / 1.10")
             .build()
-            
-        mediaItems.add(MediaBrowser.MediaItem(description, MediaBrowser.MediaItem.FLAG_PLAYABLE))
+        mediaItems.add(MediaBrowser.MediaItem(headerDesc, MediaBrowser.MediaItem.FLAG_PLAYABLE))
+
+        // Split the detailed mathematical breakdown into multiple list items
+        // so it doesn't get truncated by Android Auto's 2-line limit
+        val breakdownLines = currentBreakdown.split("\n")
+        breakdownLines.forEachIndexed { index, line ->
+            if (line.isNotBlank()) {
+                val lineDesc = MediaDescription.Builder()
+                    .setMediaId("cogpilot_status_line_$index")
+                    .setTitle(line)
+                    .build()
+                mediaItems.add(MediaBrowser.MediaItem(lineDesc, MediaBrowser.MediaItem.FLAG_PLAYABLE))
+            }
+        }
         
         result.sendResult(mediaItems)
     }

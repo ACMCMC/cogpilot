@@ -39,8 +39,13 @@ class RiskDecisionEngine(private val context: Context) {
     private var currentRiskState: RiskState = RiskState.STABLE
     private var currentInteractionLevel: Int = 0
     private var tripStartTime: Long = 0L
-    var isDriving: Boolean = false
+
+    var isParked: Boolean = true
         private set
+
+    val isDriving: Boolean
+        get() = !isParked
+
     private var tripStartVocalEnergy: Float = 1.0f
 
     // Rolling history (for trend analysis)
@@ -89,7 +94,6 @@ class RiskDecisionEngine(private val context: Context) {
 
     fun startTrip(userId: String, sleepHours: Int) {
         Log.i(TAG, "🚗 Trip started: $userId, sleep=$sleepHours hrs")
-        isDriving = true
         tripStartTime = System.currentTimeMillis()
         lastDecisionTime = tripStartTime
         sleepHoursToday = sleepHours
@@ -105,7 +109,6 @@ class RiskDecisionEngine(private val context: Context) {
 
     fun stopTrip() {
         Log.i(TAG, "🛑 Trip stopped. Total cumulative minutes: $cumulativeDriveMinutes")
-        isDriving = false
         tripStartTime = 0L
         clearHistory()
         currentRiskState = RiskState.STABLE
@@ -139,6 +142,14 @@ class RiskDecisionEngine(private val context: Context) {
         if (speedHistory.size > 30) speedHistory.poll()
         
         Log.d(TAG, "🏎️ Vehicle Speed (Direct): $speedMph mph")
+    }
+
+    fun updateParkingState(parked: Boolean) {
+        Log.i(TAG, "🅿️ Parking state updated: parked=$parked")
+        isParked = parked
+        if (parked) {
+             onRiskScoreUpdated?.invoke(0f, RiskState.STABLE, "Not driving")
+        }
     }
 
     fun updateAgenticAttention(score: Float) {
@@ -255,7 +266,8 @@ class RiskDecisionEngine(private val context: Context) {
 
         // 1. Calculate Environmental Fatigue Modifier (0.0 to 0.45 range)
         circadianWindow = calculateCircadianWindow()
-        val envFatigueModifier = calculateThresholdModifier(sessionMinutes)
+        val envFactors = calculateThresholdModifier(sessionMinutes)
+        val envFatigueModifier = envFactors.total
 
         // 2. Calculate Base Cognitive Fatigue Trend (0.0 to 0.6 range)
         // Normalize Vocal Energy: 0.8 (Baseline) -> 0.0 risk, 0.35 (Critical) -> 1.0 risk
@@ -285,10 +297,9 @@ class RiskDecisionEngine(private val context: Context) {
         // 5. Final Effective Risk Score (Multiplicative Spacing)
         val effectiveRiskScore = sessionRiskScore * suppressionMultiplier
 
-        // 6. Map Score to Risk State (Threshold-based)
         val newRiskState = when {
             effectiveRiskScore >= 0.95f -> RiskState.CRITICAL
-            effectiveRiskScore >= 0.80f -> RiskState.WINDOW // Mandatory trigger point (80%)
+            effectiveRiskScore >= 0.75f -> RiskState.WINDOW // Mandatory trigger point (75%)
             effectiveRiskScore >= 0.60f -> RiskState.EMERGING
             else -> RiskState.STABLE
         }
@@ -297,7 +308,7 @@ class RiskDecisionEngine(private val context: Context) {
         val newInteractionLevel = when {
             effectiveRiskScore >= 0.95f -> 4 // Safety Command
             effectiveRiskScore >= 0.88f -> 3 // Persuasive Argument
-            effectiveRiskScore >= 0.80f -> 1 // Mandatory Check-in (80% threshold)
+            effectiveRiskScore >= 0.75f -> 1 // Mandatory Check-in (75% threshold)
             else -> 0 // Silence
         }
 
@@ -309,8 +320,10 @@ class RiskDecisionEngine(private val context: Context) {
             val reason = "Score: ${String.format("%.2f", effectiveRiskScore)} | " + 
                         buildDecisionRationale(
                             newRiskState, newInteractionLevel, sessionMinutes,
-                            currentVocalEnergyTrend, currentLatencyTrend,
-                            baseFatigueRisk, envFatigueModifier
+                            currentVocalEnergyTrend, currentLatencyTrend, currentPaceTrend,
+                            baseFatigueRisk, envFactors, agenticAttentionScore,
+                            paceRisk, energyRisk, latencyRisk, agenticRisk,
+                            suppressionMultiplier
                         )
 
             Log.i(TAG, "🔄 Risk state changed: $newRiskState (Level $newInteractionLevel) - $reason")
@@ -319,8 +332,10 @@ class RiskDecisionEngine(private val context: Context) {
 
         val breakdownStr = buildDecisionRationale(
             currentRiskState, currentInteractionLevel, sessionMinutes,
-            currentVocalEnergyTrend, currentLatencyTrend,
-            baseFatigueRisk, envFatigueModifier, agenticAttentionScore
+            currentVocalEnergyTrend, currentLatencyTrend, currentPaceTrend,
+            baseFatigueRisk, envFactors, agenticAttentionScore,
+            paceRisk, energyRisk, latencyRisk, agenticRisk,
+            suppressionMultiplier
         )
 
         // Always notify of score update for UI/Android Auto updates
@@ -375,27 +390,37 @@ class RiskDecisionEngine(private val context: Context) {
         }
     }
 
-    private fun calculateThresholdModifier(sessionMinutes: Int): Float {
+    private fun calculateThresholdModifier(sessionMinutes: Int): EnvFactors {
         var modifier = 0f
+        
+        var durationW = 0f
+        var circadianW = 0f
+        var trafficW = 0f
+        var roadW = 0f
+        var tempW = 0f
+        var baselineW = 0f
 
         // 1. Driving Time (Demo Weight - Exaggerated Logarithmic Ramp)
         // D(t) = 0.3 * ln(1 + t) / ln(6). After 5 mins, modifier = 0.3
         val durationWeight = (0.3f * (Math.log(1.0 + sessionMinutes) / Math.log(6.0)).toFloat()).coerceAtLeast(0f)
-        modifier += durationWeight
-        if (sessionMinutes > 120) modifier += 0.15f
+        durationW += durationWeight
+        if (sessionMinutes > 120) durationW += 0.15f
+        modifier += durationW
 
         // 2. Time of Day (Circadian Weight)
         if (circadianWindow == CircadianWindow.CIRCADIAN_LOW) {
-            modifier += 0.12f // Significant bump during danger windows
+            circadianW += 0.12f // Significant bump during danger windows
+            modifier += circadianW
         }
 
         // 3. Traffic Condition (Complexity Weight)
         // High traffic ignores monotony but increases cognitive load, reducing allowed latency
         when (trafficCondition) {
-            TrafficCondition.HEAVY -> modifier += 0.08f
-            TrafficCondition.MODERATE -> modifier += 0.03f
-            TrafficCondition.LIGHT -> modifier += 0f
+            TrafficCondition.HEAVY -> trafficW += 0.08f
+            TrafficCondition.MODERATE -> trafficW += 0.03f
+            TrafficCondition.LIGHT -> trafficW += 0f
         }
+        modifier += trafficW
 
         // 4. Road Complexity & Speed (Environment Weight)
         // Highway driving is more monotonous than mixed or urban roads
@@ -405,40 +430,52 @@ class RiskDecisionEngine(private val context: Context) {
         
         when (currentRoadType) {
             RoadType.HIGHWAY -> {
-                modifier += 0.07f
+                roadW += 0.07f
                 if (avgSpeedMph in 65f..75f) {
-                    modifier += 0.05f // High speed monotony multiplier
+                    roadW += 0.05f // High speed monotony multiplier
                 }
             }
-            RoadType.SUBURBAN -> modifier += 0.02f
-            RoadType.URBAN -> modifier -= 0.05f // Cities keep people alert
-            RoadType.MIXED -> modifier += 0f
+            RoadType.SUBURBAN -> roadW += 0.02f
+            RoadType.URBAN -> roadW -= 0.05f // Cities keep people alert
+            RoadType.MIXED -> roadW += 0f
         }
+        modifier += roadW
 
         // 5. Temperature (Fatigue Weight)
         // Assume baseline 60°F. Deviations into heat or cold increase fatigue.
         val tempDeviation = Math.abs(ambientTemperatureF - 60.0f)
         if (tempDeviation > 20f) { // Above 80°F or below 40°F
-            modifier += 0.06f
+            tempW += 0.06f
         }
         if (tempDeviation > 35f) { // Above 95°F or below 25°F
-            modifier += 0.12f
+            tempW += 0.12f
         }
+        modifier += tempW
 
         // 6. Sleep Debt (Baseline Weight)
-        if (sleepHoursToday < 6) modifier += 0.05f
-        if (sleepHoursToday < 5) modifier += 0.12f
-        if (sleepHoursToday < 4) modifier += 0.25f
+        if (sleepHoursToday < 6) baselineW += 0.05f
+        if (sleepHoursToday < 5) baselineW += 0.12f
+        if (sleepHoursToday < 4) baselineW += 0.25f
 
         // 6. Risk Level (Baseline Weight)
-        if (driverProfile?.riskLevel == RiskLevel.HIGH) modifier += 0.08f
+        if (driverProfile?.riskLevel == RiskLevel.HIGH) baselineW += 0.08f
+        
+        modifier += baselineW
 
         // 7. Interaction Analysis (Future: Average words per interaction length)
         // Placeholder for avg_words_per_duration calculation
         // val avgInteractionEfficiency = calculateInteractionEfficiency()
         // modifier += (1.0f - avgInteractionEfficiency) * 0.1f
 
-        return modifier.coerceIn(0f, 0.45f) // Cap the modifier to avoid over-sensitivity
+        return EnvFactors(
+            duration = durationW, durationRaw = sessionMinutes,
+            circadian = circadianW, circadianRaw = circadianWindow,
+            traffic = trafficW, trafficRaw = trafficCondition,
+            road = roadW, roadRaw = currentRoadType, speedRaw = avgSpeedMph,
+            temp = tempW, tempRaw = ambientTemperatureF.toFloat(),
+            baseline = baselineW, sleepRaw = sleepHoursToday.toFloat(), profileRaw = driverProfile?.riskLevel?.name ?: "UNK",
+            total = modifier.coerceIn(0f, 0.45f)
+        )
     }
 
     private fun isRiskTriggerActive(): Boolean {
@@ -488,7 +525,13 @@ class RiskDecisionEngine(private val context: Context) {
         // Priority check: Only use GPS speed if car hardware speed is stale (> 5 seconds)
         val now = System.currentTimeMillis()
         if (lastVehicleSpeedMph == null || (now - lastVehicleSpeedTime > 5000)) {
-            val gpsSpeedMph = location.speed * 2.237f
+            var gpsSpeedMph = location.speed * 2.237f
+            if (gpsSpeedMph < 10f) {
+                gpsSpeedMph = 0f // Filter out GPS measurement errors when stationary/slow moving
+            } else if (isParked) {
+                // If we are moving > 10mph on GPS, we are definitely not parked. Un-park!
+                updateParkingState(false)
+            }
             speedHistory.add(gpsSpeedMph)
             if (speedHistory.size > 30) speedHistory.poll()
             Log.d(TAG, "📍 GPS Speed (Fallback): $gpsSpeedMph mph")
@@ -593,12 +636,34 @@ class RiskDecisionEngine(private val context: Context) {
         driveMinutes: Int,
         vocalTrend: Float,
         latencyTrend: Float,
+        paceTrend: Float,
         baseFatigue: Float,
-        envModifier: Float,
-        agentScore: Float = 0.5f,
-        paceTrend: Float = 2.5f
+        env: EnvFactors,
+        agentScore: Float,
+        paceRisk: Float,
+        energyRisk: Float,
+        latencyRisk: Float,
+        agenticRisk: Float,
+        suppressionMultiplier: Float
     ): String {
-        return "Base: ${String.format("%.2f", baseFatigue)} + Env: ${String.format("%.2f", envModifier)} | Pace: ${String.format("%.1f", paceTrend)}wps | Agent: ${String.format("%.2f", agentScore)}"
+        return String.format(
+            "[Base(Engy(%.2f)*.15=%.2f + Lat(%.0f)*.20=%.2f + Pace(%.1f)*.15=%.2f + Agnt(%.2f)*.1=%.2f) + Env(%.2f)] * Supp(%.2f) = %.2f\n" +
+            "Env: Tim(%dm)=%.2f Cir(%s)=%.2f Trf(%s)=%.2f Rd(%s,%.0fmph)=%.2f Tmp(%.0fF)=%.2f SlpPrf(%.1fh,%s)=%.2f",
+            vocalTrend, energyRisk * 0.15f, 
+            latencyTrend, latencyRisk * 0.20f, 
+            paceTrend, paceRisk * 0.15f, 
+            agentScore, agenticRisk * 0.10f,
+            env.total, 
+            suppressionMultiplier,
+            ((baseFatigue + env.total) * suppressionMultiplier).coerceIn(0f, 1.1f),
+
+            env.durationRaw, env.duration, 
+            env.circadianRaw.name.take(3), env.circadian, 
+            env.trafficRaw.name.take(3), env.traffic, 
+            env.roadRaw.name.take(3), env.speedRaw, env.road, 
+            env.tempRaw, env.temp, 
+            env.sleepRaw, env.profileRaw.take(3), env.baseline
+        )
     }
 
     private fun clearHistory() {
@@ -668,4 +733,14 @@ data class RiskDebugInfo(
     val vocalEnergyTrend: Float,
     val latencyTrend: Float,
     val speedVariance: Float
+)
+        
+data class EnvFactors(
+    val duration: Float, val durationRaw: Int,
+    val circadian: Float, val circadianRaw: CircadianWindow,
+    val traffic: Float, val trafficRaw: TrafficCondition,
+    val road: Float, val roadRaw: RoadType, val speedRaw: Float,
+    val temp: Float, val tempRaw: Float,
+    val baseline: Float, val sleepRaw: Float, val profileRaw: String,
+    val total: Float
 )
