@@ -257,6 +257,25 @@ Return as a numbered list.""".trimIndent()
         return@withContext data?.optJSONArray(0)?.optInt(0, 1) ?: 1
     }
 
+    suspend fun generateStartMessage(driverId: Int): String = withContext(Dispatchers.IO) {
+        // simple greeting using their profile info
+        val userIdRes = sqlApi.execute("SELECT user_id FROM USER_PROFILE WHERE driver_id = $driverId")
+        val userId = userIdRes.optJSONArray("data")?.optJSONArray(0)?.optString(0, "") ?: ""
+        val profile = if (userId.isNotBlank()) getUserProfileById(userId) else emptyMap()
+        val interests = profile["interests"] ?: ""
+        val prompt = "You are an attentive driving copilot. Create a friendly opening message for a driver whose interests are: $interests. Keep it under 20 words."
+        val sql = """
+            SELECT SNOWFLAKE.CORTEX.COMPLETE(
+                'snowflake-arctic',
+                '[{"role": "user", "content": "${prompt.replace("\"", "\\\"")}"}]'
+            ) as response
+        """.trimIndent()
+        val result = sqlApi.execute(sql)
+        val data = result.optJSONArray("data")
+        val message = data?.optJSONArray(0)?.optString(0, "Hello!") ?: "Hello!"
+        message
+    }
+
     fun close() {
         Log.i("SnowflakeManager", "Session closed")
     }

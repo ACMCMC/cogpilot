@@ -47,6 +47,7 @@ class VoiceAgentService : Service() {
     // hold context updates until connected
     private var pendingTopics: String? = null
     private var pendingEventSummary: String? = null
+    private var pendingStartMessage: String? = null
 
     inner class VoiceAgentBinder : Binder() {
         fun getService(): VoiceAgentService = this@VoiceAgentService
@@ -97,22 +98,28 @@ class VoiceAgentService : Service() {
             try {
                 // gather context before starting the conversation
                 val driverNum = snowflakeManager.getDriverNum(currentDriverId)
+                val startMsg = snowflakeManager.generateStartMessage(driverNum)
                 val topics = snowflakeManager.generateConversationTopics(driverId = driverNum)
                 val profile = snowflakeManager.getUserProfileById(currentDriverId)
                 val events = calendarContext.getUpcomingEvents(limit = 5, windowMinutes = 240)
                 if (events.isNotEmpty()) {
                     snowflakeManager.insertCalendarEvents(driverId = driverNum, events = events)
                 }
-                // send profile + calendar context
-                val profText = "Profile interests: ${profile["interests"]}, complexity: ${profile["complexity"]}"
-                session?.sendContextualUpdate(profText)
+                // prepare plain-text profile description for AI
+                val profText = "Driver profile: interests = ${profile["interests"]}; complexity = ${profile["complexity"]}."
+                Log.d(TAG, "Profile text: $profText")
+                sendUpdate(profText)
+                // also log/start message
+                Log.d(TAG, "Start message: $startMsg")
+                pendingStartMessage = startMsg
                 if(events.isNotEmpty()){
                     val eventSummary = events.joinToString("; ") { ev ->
                         val title = ev.title.ifBlank { "(untitled)" }
                         val loc = ev.location?.let { " @ $it" } ?: ""
                         "${title}${loc}"
                     }
-                    session?.sendContextualUpdate("Upcoming calendar events: $eventSummary")
+                    Log.d(TAG, "Calendar summary: $eventSummary")
+                    sendUpdate("Upcoming calendar events: $eventSummary")
                 }
 
                 // setup callbacks for the official SDK
@@ -124,13 +131,18 @@ class VoiceAgentService : Service() {
                         updateNotification("🎙️ Listening...")
                         broadcastStatus("connected")
                         // now send any pending context
+                        pendingStartMessage?.let {
+                            sendUpdate(it)
+                            Log.d(TAG, "✓ Sent start message")
+                            pendingStartMessage = null
+                        }
                         pendingTopics?.let {
-                            session?.sendContextualUpdate("Suggested topics: $it")
+                            sendUpdate("Suggested topics: $it")
                             Log.d(TAG, "✓ Sent pre-convo topics")
                             pendingTopics = null
                         }
                         pendingEventSummary?.let {
-                            session?.sendContextualUpdate("Upcoming calendar events: $it")
+                            sendUpdate("Upcoming calendar events: $it")
                             Log.d(TAG, "✓ Sent calendar context")
                             pendingEventSummary = null
                         }
@@ -239,6 +251,11 @@ class VoiceAgentService : Service() {
             Log.e(TAG, "Stop error: ${e.message}", e)
             stopSelf()
         }
+    }
+
+    private fun sendUpdate(text:String) {
+        Log.d(TAG, "model input: $text")
+        session?.sendContextualUpdate(text)
     }
 
     private fun createNotificationChannel() {
