@@ -115,7 +115,7 @@ class SnowflakeManagerTest {
             }
             `when`(mockSqlApi.execute(anyString())).thenReturn(startMsgResponse)
 
-            val message = manager.generateStartMessage(1)
+            val message = manager.generateStartMessage("aldan_creo", 1234, emptyList())
 
             assertNotNull(message)
             assertFalse(message.isEmpty())
@@ -132,7 +132,7 @@ class SnowflakeManagerTest {
             }
             `when`(mockSqlApi.execute(anyString())).thenReturn(emptyResponse)
 
-            val message = manager.generateStartMessage(999)
+            val message = manager.generateStartMessage("aldan_creo", 9999, emptyList())
 
             assertEquals("Hello!", message)
         }

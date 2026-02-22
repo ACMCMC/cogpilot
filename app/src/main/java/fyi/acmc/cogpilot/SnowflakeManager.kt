@@ -198,15 +198,22 @@ Return as a numbered list.""".trimIndent()
         return@withContext 1
     }
 
-    suspend fun generateStartMessage(driverId: Int): String = withContext(Dispatchers.IO) {
-        // simple greeting using their profile info - for now use static user based on caller context
-        val profile = mapOf(
-            "interests" to "Cognitive Science, Music, Travel",
-            "complexity" to "intermediate"
-        )
-        val interests = profile["interests"] ?: ""
-        Log.d("SnowflakeManager", "generateStartMessage: interests=$interests")
-        val prompt = "You are an attentive driving copilot. Create a friendly opening message for a driver whose interests are: $interests. Keep it under 20 words."
+    suspend fun generateStartMessage(userId: String, seed: Int, recentInteractions: List<String>): String = withContext(Dispatchers.IO) {
+        val profile = getUserProfileById(userId)
+        val interests = profile["interests"] ?: "Cognitive Science, Music, Travel"
+        val historyBlock = if (recentInteractions.isNotEmpty()) {
+            "Recent interactions:\n" + recentInteractions.joinToString("\n")
+        } else {
+            "Recent interactions: none"
+        }
+        Log.d("SnowflakeManager", "generateStartMessage: user=$userId interests=$interests seed=$seed")
+        val prompt = """
+You are an attentive driving copilot. Create a friendly opening message with variety.
+Use a different phrasing than recent openings. Keep it under 20 words.
+Driver interests: $interests
+$historyBlock
+Variation seed: $seed
+""".trimIndent().replace("\n", " ")
         val sql = """
             SELECT SNOWFLAKE.CORTEX.COMPLETE(
                 'snowflake-arctic',
@@ -217,6 +224,33 @@ Return as a numbered list.""".trimIndent()
         val data = result.optJSONArray("data")
         val message = data?.optJSONArray(0)?.optString(0, "Hello!") ?: "Hello!"
         message
+    }
+
+    suspend fun getRecentInteractionSummaries(userId: String, limit: Int = 3): List<String> = withContext(Dispatchers.IO) {
+        val sql = """
+            SELECT copilot_message, driver_response, interaction_level, response_type
+            FROM INTERACTIONS
+            WHERE user_id = '$userId'
+            ORDER BY timestamp DESC
+            LIMIT $limit
+        """.trimIndent()
+        val result = sqlApi.execute(sql)
+        val errorCode = result.optString("code", "")
+        if (errorCode.contains("002003") || result.optString("message", "").contains("does not exist")) {
+            Log.e("SnowflakeManager", "INTERACTIONS table does not exist. Run populate_snowflake.py first.")
+            return@withContext emptyList()
+        }
+        val data = result.optJSONArray("data") ?: return@withContext emptyList()
+        val out = mutableListOf<String>()
+        for (i in 0 until data.length()) {
+            val row = data.optJSONArray(i) ?: continue
+            val copilot = row.optString(0, "").take(120)
+            val driver = row.optString(1, "").take(120)
+            val level = row.optInt(2, -1)
+            val responseType = row.optString(3, "")
+            out.add("L$level | Copilot: $copilot | Driver: $driver | Response: $responseType")
+        }
+        out
     }
 
     fun close() {
