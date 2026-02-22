@@ -36,6 +36,7 @@ class MainActivity : AppCompatActivity() {
     private var isDrivingMode = false
     private var voiceActive = false
     private var lastAutoTriggerTime = 0L
+    private var lastRiskScore = 0f
 
     private lateinit var uiManager: UIManager
     
@@ -174,6 +175,7 @@ class MainActivity : AppCompatActivity() {
                         if (logs.isNotEmpty()) {
                             val riskData = riskScorer.calculateRisk(logs)
                             uiManager.updateRisk(riskData)
+                            lastRiskScore = riskData.riskScore
 
                             if (riskData.needsIntervention) {
                                 Log.w("CogPilot", "⚠️ HIGH RISK: ${riskData.riskScore}")
@@ -210,6 +212,7 @@ class MainActivity : AppCompatActivity() {
             Manifest.permission.ACCESS_FINE_LOCATION,
             Manifest.permission.ACCESS_COARSE_LOCATION,
             Manifest.permission.RECORD_AUDIO,
+            Manifest.permission.READ_CALENDAR,
             Manifest.permission.INTERNET
         )
 
@@ -245,9 +248,21 @@ class MainActivity : AppCompatActivity() {
     private fun onPermissionsGranted() {
         Log.i("CogPilot", "Starting location capture with permissions...")
         lifecycleScope.launch {
-            locationCapture.startCapture(snowflakeManager) { speed, heading ->
-                uiManager.updateMetrics(speed, heading)
-            }
+            locationCapture.startCapture(
+                snowflakeManager,
+                callback = { speed, heading ->
+                    uiManager.updateMetrics(speed, heading)
+                },
+                debug = { speed, heading, roadCtx ->
+                    uiManager.updateDebug(
+                        speed = speed,
+                        heading = heading,
+                        riskScore = lastRiskScore,
+                        voiceActive = voiceActive,
+                        roadCtx = roadCtx
+                    )
+                }
+            )
         }
     }
 
@@ -285,6 +300,7 @@ class UIManager(private val activity: AppCompatActivity) {
     private lateinit var interventionCard: com.google.android.material.card.MaterialCardView
     private lateinit var interventionText: TextView
     private lateinit var metricsText: TextView
+    private lateinit var debugText: TextView
 
     private var onVoiceToggle: (() -> Unit)? = null
 
@@ -319,6 +335,8 @@ class UIManager(private val activity: AppCompatActivity) {
         container.addView(createRiskGauge())
         container.addView(createSpacerView(12))
         container.addView(createMetricsRow())
+        container.addView(createSpacerView(20))
+        container.addView(createDebugCard())
         container.addView(createSpacerView(20))
         container.addView(createInterventionCard())
         container.addView(createSpacerView(20))
@@ -558,6 +576,35 @@ class UIManager(private val activity: AppCompatActivity) {
         return card
     }
 
+    private fun createDebugCard(): com.google.android.material.card.MaterialCardView {
+        val card = createCard(android.graphics.Color.parseColor("#0B0F14"), 10f, "#2B3A42")
+        val content = android.widget.LinearLayout(activity).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(20, 20, 20, 20)
+        }
+
+        val label = TextView(activity).apply {
+            text = "Debug: system state"
+            textSize = 12f
+            setTextColor(android.graphics.Color.parseColor("#8EA3B5"))
+            typeface = Typeface.SANS_SERIF
+            setPadding(0, 0, 0, 10)
+        }
+
+        debugText = TextView(activity).apply {
+            text = "waiting for data..."
+            textSize = 13f
+            setTextColor(android.graphics.Color.parseColor("#A3B8C7"))
+            typeface = Typeface.SANS_SERIF
+            setLineSpacing(0f, 1.4f)
+        }
+
+        content.addView(label)
+        content.addView(debugText)
+        card.addView(content)
+        return card
+    }
+
     private fun createSpacerView(heightDp: Int): android.view.View {
         return android.view.View(activity).apply {
             layoutParams = android.widget.LinearLayout.LayoutParams(
@@ -634,6 +681,36 @@ class UIManager(private val activity: AppCompatActivity) {
 
         metricsText.text = "Monotony: %.2f\nTime: %.2f\nComplexity: %.2f".format(
             risk.monotony, risk.timeOnTask, risk.complexity
+        )
+    }
+
+    fun updateDebug(
+        speed: Float,
+        heading: Float,
+        riskScore: Float,
+        voiceActive: Boolean,
+        roadCtx: RoadContext
+    ) {
+        val placeId = roadCtx.placeId ?: "-"
+        val types = if (roadCtx.types.isNotEmpty()) roadCtx.types.joinToString(",") else "-"
+        val speedLimit = roadCtx.speedLimitMph?.let { "%.1f mph".format(it) } ?: "-"
+        val traffic = roadCtx.trafficRatio?.let { "%.2f".format(it) } ?: "-"
+
+        debugText.text = """
+speed: %.1f mph | heading: %.0f°
+risk: %.2f | voice: %s
+road place_id: %s
+road types: %s
+speed limit: %s | traffic: %s
+""".trimIndent().format(
+            speed,
+            heading,
+            riskScore,
+            if (voiceActive) "active" else "idle",
+            placeId,
+            types,
+            speedLimit,
+            traffic
         )
     }
 

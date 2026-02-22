@@ -27,15 +27,18 @@ class LocationCapture(private val context: Context) {
     private var lastLocation: Location? = null
     private var locationListener: LocationListener? = null
     private var captureCallback: ((speed: Float, heading: Float) -> Unit)? = null
+    private var debugCallback: ((speed: Float, heading: Float, roadCtx: RoadContext) -> Unit)? = null
     private var snowflakeManager: SnowflakeManager? = null
     private val mapsClient = MapsRoadsClient(context)
 
     fun startCapture(
         snowflakeManager: SnowflakeManager,
-        callback: (speed: Float, heading: Float) -> Unit
+        callback: (speed: Float, heading: Float) -> Unit,
+        debug: ((speed: Float, heading: Float, roadCtx: RoadContext) -> Unit)? = null
     ) {
         this.snowflakeManager = snowflakeManager
         captureCallback = callback
+        debugCallback = debug
 
         // Check for location permissions
         if (PermissionChecker.checkSelfPermission(
@@ -81,6 +84,8 @@ class LocationCapture(private val context: Context) {
                             trafficRatio = roadCtx.trafficRatio,
                             speedOverLimit = speedOver
                         )
+
+                        debugCallback?.invoke(speed, heading, roadCtx)
                     }
                 }
 

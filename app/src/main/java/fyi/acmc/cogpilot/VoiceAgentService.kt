@@ -38,6 +38,8 @@ class VoiceAgentService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
     private var session: ConversationSession? = null
     private var isRunning = false
+    private val snowflakeManager = SnowflakeManager()
+    private val calendarContext = CalendarContextProvider(this)
 
     inner class VoiceAgentBinder : Binder() {
         fun getService(): VoiceAgentService = this@VoiceAgentService
@@ -83,6 +85,13 @@ class VoiceAgentService : Service() {
 
         serviceScope.launch {
             try {
+                // brainstorm topics and calendar context before starting the conversation
+                val topics = snowflakeManager.generateConversationTopics(driverId = 1)
+                val events = calendarContext.getUpcomingEvents(limit = 5, windowMinutes = 240)
+                if (events.isNotEmpty()) {
+                    snowflakeManager.insertCalendarEvents(driverId = 1, events = events)
+                }
+
                 // setup callbacks for the official SDK
                 val config = ConversationConfig(
                     agentId = BuildConfig.ELEVENLABS_AGENT_ID,
@@ -137,6 +146,20 @@ class VoiceAgentService : Service() {
                 // start the conversation - official SDK handles everything
                 session = ConversationClient.startSession(config, this@VoiceAgentService)
                 Log.i(TAG, "✓ Official SDK conversation started")
+
+                if (topics.isNotBlank()) {
+                    session?.sendContextualUpdate("Suggested topics: $topics")
+                    Log.d(TAG, "✓ Sent pre-convo topics")
+                }
+                if (events.isNotEmpty()) {
+                    val eventSummary = events.joinToString("; ") { ev ->
+                        val title = ev.title.ifBlank { "(untitled)" }
+                        val loc = ev.location?.let { " @ $it" } ?: ""
+                        "${title}${loc}"
+                    }
+                    session?.sendContextualUpdate("Upcoming calendar events: $eventSummary")
+                    Log.d(TAG, "✓ Sent calendar context")
+                }
                 
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start: ${e.message}", e)

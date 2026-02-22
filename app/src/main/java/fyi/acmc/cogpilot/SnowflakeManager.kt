@@ -79,6 +79,31 @@ class SnowflakeManager {
         """.trimIndent())
 
         sqlApi.execute("""
+            CREATE TABLE IF NOT EXISTS CONVERSATION_TOPICS (
+                id INTEGER AUTOINCREMENT,
+                driver_id INTEGER,
+                interest_topics VARCHAR,
+                prompt VARCHAR,
+                response TEXT,
+                generated_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+                PRIMARY KEY (id)
+            )
+        """.trimIndent())
+
+        sqlApi.execute("""
+            CREATE TABLE IF NOT EXISTS CALENDAR_EVENTS (
+                id INTEGER AUTOINCREMENT,
+                driver_id INTEGER,
+                title VARCHAR,
+                start_ms BIGINT,
+                end_ms BIGINT,
+                location VARCHAR,
+                created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+                PRIMARY KEY (id)
+            )
+        """.trimIndent())
+
+        sqlApi.execute("""
             INSERT INTO USER_PROFILE (driver_id, interest_topics, complexity_level)
             SELECT 1, 'Quantum Physics,90s Rock,Philosophy', 'advanced'
             WHERE NOT EXISTS (SELECT 1 FROM USER_PROFILE WHERE driver_id = 1)
@@ -162,6 +187,55 @@ Generate a SHORT, PROVOCATIVE question under 20 words."""
         sqlApi.execute(insert)
 
         response
+    }
+
+    suspend fun generateConversationTopics(driverId: Int = 1): String = withContext(Dispatchers.IO) {
+        val interests = getInterestTopics(driverId)
+        val prompt = """You are a friendly driving copilot. Brainstorm 5 short conversation topics
+for a driver based on their interests. Keep each topic under 8 words.
+Interests: $interests
+Return as a numbered list.""".trimIndent()
+
+        val sql = """
+            SELECT SNOWFLAKE.CORTEX.COMPLETE(
+                'snowflake-arctic',
+                '[{"role": "user", "content": "${prompt.replace("\"", "\\\"").replace("\n", " ")}"}]'
+            ) as response
+        """.trimIndent()
+
+        val result = sqlApi.execute(sql)
+        val data = result.optJSONArray("data")
+        val response = data?.optJSONArray(0)?.optString(0, "") ?: ""
+
+        val insert = """
+            INSERT INTO CONVERSATION_TOPICS (driver_id, interest_topics, prompt, response)
+            VALUES ($driverId, '${interests.replace("'", "''")}', '${prompt.replace("'", "''").take(250)}', '${response.replace("'", "''")}')
+        """.trimIndent()
+        sqlApi.execute(insert)
+
+        response
+    }
+
+    suspend fun insertCalendarEvents(driverId: Int, events: List<CalendarEvent>) = withContext(Dispatchers.IO) {
+        if (events.isEmpty()) return@withContext
+        val values = events.joinToString(",") { ev ->
+            val title = ev.title.replace("'", "''")
+            val loc = ev.location?.replace("'", "''")
+            "($driverId, '$title', ${ev.startMs}, ${ev.endMs}, ${if (loc == null) "NULL" else "'$loc'"})"
+        }
+        val sql = """
+            INSERT INTO CALENDAR_EVENTS (driver_id, title, start_ms, end_ms, location)
+            VALUES $values
+        """.trimIndent()
+        sqlApi.execute(sql)
+    }
+
+    private fun getInterestTopics(driverId: Int): String {
+        val sql = "SELECT interest_topics FROM USER_PROFILE WHERE driver_id = $driverId"
+        val result = sqlApi.execute(sql)
+        val data = result.optJSONArray("data")
+        val interests = data?.optJSONArray(0)?.optString(0, "")
+        return if (interests.isNullOrBlank()) "Cognitive Science, Music, Travel" else interests
     }
 
     fun close() {
