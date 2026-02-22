@@ -1,3 +1,11 @@
+# Drowsiness Detection ML Models (Consolidated)
+
+**Project:** CogPilot — Driver Drowsiness Detection
+**Last updated:** February 22, 2026
+
+This README consolidates the final ML workflow, experiment summaries, and deployment artifacts. The canonical deployment artifacts are the ONNX models (`sleepiness_detector.onnx`, `emotion_classifier.onnx`). Old sklearn pickle files were removed from `scripts/` to avoid accidental deployment.
+
+See `EXPERIMENT_RESULTS.md` for full ablation and evaluation details, and `ONNX_DEPLOYMENT.md` for Android integration examples.
 # CogPilot Snowflake Population Script
 
 Comprehensive CLI tool to populate Snowflake with realistic driver profile data, trip history, telemetry, and interaction logs. **Uses advanced Snowflake features for production-grade analytics.**
@@ -54,7 +62,7 @@ python scripts/populate_snowflake.py
 
 ```bash
 python scripts/populate_snowflake.py --warehouse PROD_WH --database COGPILOT_PROD
-```
+Train a machine learning model to detect drowsiness from audio using **proxy learning** with the RAVDESS emotion dataset. Low arousal emotions (calm, neutral, sad) proxy for sleepy states, high arousal emotions (happy, angry, fearful) proxy for alert states.
 
 ## Advanced Snowflake Features Used 🏆
 
@@ -93,9 +101,6 @@ python scripts/populate_snowflake.py --warehouse PROD_WH --database COGPILOT_PRO
 - ✅ Tag all tables as PII/SENSITIVE for compliance
 - ✅ Enables Snowflake data governance workflows
 
-### 8. **Query Acceleration Service Hints**
-- ✅ Enabled results caching for repeated queries
-
 ---
 
 ## Data Loaded: 3 Personas
@@ -119,8 +124,6 @@ python scripts/populate_snowflake.py --warehouse PROD_WH --database COGPILOT_PRO
 ### 🟢 **Marta Sanchez** (LOW RISK)
 - **Interest**: Biology, animals, tennis, farm life (from Utah)
 - **Risk trigger**: Very rare (~1x per 40 trips after 18+ hour lab days)
-- **Effective lever**: Discipline + routine language, animal welfare analogy
-- **Trips**: 42 (0 high-risk)
 - **Vocal energy baseline**: 0.81
 - **Profile depth**: Early riser (05:30), responds to brief direct language
 
@@ -131,7 +134,6 @@ python scripts/populate_snowflake.py --warehouse PROD_WH --database COGPILOT_PRO
 ### Find high-risk drivers
 ```sql
 SELECT user_id, high_risk_trips, avg_trip_length_minutes 
-FROM DRIVER_RISK_SUMMARY 
 WHERE high_risk_trips > 3 
 ORDER BY high_risk_trips DESC;
 ```
@@ -203,10 +205,94 @@ Success looks like:
 
 ---
 
+## Drowsiness Detection Model Training
+
+### Overview
+
+Train a machine learning model to detect drowsiness from audio using **proxy learning** with the RAVDESS emotion dataset. Low arousal emotions (calm, neutral, sad) proxy for sleepy states, high arousal emotions (happy, angry, fearful) proxy for alert states.
+
+### ⚠️ IMPORTANT: Use REAL RAVDESS Data
+
+**DO NOT use synthetic data.** You need the actual RAVDESS dataset with real human speech.
+
+### Setup
+
+```bash
+# Install ML dependencies
+pip install -r requirements_ml.txt
+```
+
+### Get RAVDESS Dataset (REQUIRED)
+
+**You MUST download the real RAVDESS dataset from Kaggle:**
+
+1. **Go to Kaggle**: https://www.kaggle.com/datasets/uwrfkaggle/ravdess-emotional-speech-audio
+2. **Download** `Audio_Speech_Actors_01-24.zip` (~200MB)
+3. **Unzip** into `scripts/ravdess_data/`:
+
+```bash
+cd scripts
+unzip ~/Downloads/Audio_Speech_Actors_01-24.zip -d ravdess_data/
+```
+
+**Verify structure:**
+```bash
+ls ravdess_data/
+# Should see: Actor_01/ Actor_02/ ... Actor_24/
+```
+
+### Train the Model
+
+```bash
+python train_drowsiness_model.py
+```
+
+**Output:**
+- `sleepiness_detector.pkl` - trained Random Forest model
+- `feature_scaler.pkl` - feature normalization stats
+- Accuracy report printed to console
+
+**Expected accuracy:** 70-90% (using real emotion as proxy for drowsiness)
+
+### Test the Model
+
+```bash
+# Test on a single audio file
+python test_drowsiness_model.py ravdess_data/Actor_01/03-01-02-01-01-01-01.wav
+```
+
+**Output:**
+```
+Analyzing: ravdess_data/Actor_01/03-01-02-01-01-01-01.wav
+Prediction: SLEEPY
+Confidence: 87.45%
+Model is: Very confident
+```
+
+### Technical Details
+
+**Algorithm:** Random Forest Classifier (150 trees)
+**Features:** 40 MFCCs + 12 Chroma features = 52 features per audio sample
+**Proxy Labels:**
+- Sleepy (1): Neutral, Calm, Sad emotions
+- Alert (0): Happy, Angry, Fearful, Surprised emotions
+
+**Rationale:** Drowsiness manifests acoustically as low arousal: monotone pitch, slower articulation, reduced energy. These characteristics overlap with low-arousal emotions in the Circumplex Model of Affect.
+
+### Integration with Android
+
+Once model is trained and validated:
+1. Export model to TensorFlow Lite format (future work)
+2. Integrate into VoiceAgentService.kt for real-time inference
+3. Combine with vocal energy and response latency signals
+
+---
+
 ## Next Steps
 
 1. ✅ Run the population script
-2. 🔧 Build the **Decision Engine** (RiskStateCalculator) in Kotlin
-3. 🎤 Integrate voice telemetry collection
-4. 📊 Query driver profiles from app
-5. 🧠 Feed LLM prompts with driver memory + current state
+2. ✅ Train drowsiness detection model
+3. 🔧 Build the **Decision Engine** (RiskStateCalculator) in Kotlin
+4. 🎤 Integrate voice telemetry collection
+5. 📊 Query driver profiles from app
+6. 🧠 Feed LLM prompts with driver memory + current state

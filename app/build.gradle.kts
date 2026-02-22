@@ -92,6 +92,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.elevenlabs.android)
     implementation(libs.androidx.car.app)
+    implementation(libs.onnxruntime.android)
     testImplementation(libs.junit)
     testImplementation(libs.mockito.core)
     testImplementation(libs.org.json)

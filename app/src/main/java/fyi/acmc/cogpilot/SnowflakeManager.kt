@@ -290,6 +290,87 @@ Variation seed: $seed
         summary
     }
 
+    suspend fun storeConversationEmbedding(userId: String, transcript: String) = withContext(Dispatchers.IO) {
+        if (transcript.isBlank()) return@withContext
+        try {
+            // First, get the embedding using Snowflake Cortex
+            val embedSql = """
+                SELECT SNOWFLAKE.CORTEX.EMBED_TEXT_768('snowflake-arctic-embed-m', '${transcript.replace("'", "''")}') as embedding
+            """.trimIndent()
+            
+            val embedResult = sqlApi.execute(embedSql)
+            val data = embedResult.optJSONArray("data")
+            val embeddingStr = data?.optJSONArray(0)?.optString(0)
+            
+            if (embeddingStr.isNullOrEmpty()) {
+                Log.e("SnowflakeManager", "Failed to generate embedding for conversation.")
+                return@withContext
+            }
+
+            // Then insert it into the CONVERSATION_HISTORY table
+            val insertSql = """
+                INSERT INTO COGPILOT.PUBLIC.CONVERSATION_HISTORY (user_id, timestamp_ms, raw_transcript, embedding)
+                SELECT '$userId', ${System.currentTimeMillis()}, '${transcript.replace("'", "''")}', PARSE_JSON('$embeddingStr')
+            """.trimIndent()
+            
+            sqlApi.execute(insertSql)
+            Log.i("SnowflakeManager", "Stored conversation embedding for user $userId")
+        } catch (e: Exception) {
+            Log.e("SnowflakeManager", "Error storing conversation embedding: ${e.message}")
+        }
+    }
+
+    suspend fun searchPastConversations(userId: String, query: String, limit: Int = 3): String = withContext(Dispatchers.IO) {
+        if (query.isBlank()) return@withContext "No query provided."
+        try {
+            val sql = """
+                WITH Query_Embed AS (
+                    SELECT SNOWFLAKE.CORTEX.EMBED_TEXT_768('snowflake-arctic-embed-m', '${query.replace("'", "''")}') as query_vec
+                )
+                SELECT 
+                    raw_transcript, 
+                    VECTOR_COSINE_SIMILARITY(embedding, (SELECT query_vec FROM Query_Embed)) as similarity
+                FROM COGPILOT.PUBLIC.CONVERSATION_HISTORY
+                WHERE user_id = '$userId'
+                ORDER BY similarity DESC
+                LIMIT $limit
+            """.trimIndent()
+
+            val result = sqlApi.execute(sql)
+            
+            // Check for missing table error
+            val errorCode = result.optString("code", "")
+            if (errorCode.contains("002003") || result.optString("message", "").contains("does not exist")) {
+                Log.e("SnowflakeManager", "CONVERSATION_HISTORY table does not exist. Run setup script.")
+                return@withContext "Database table missing. Memory inactive."
+            }
+
+            val data = result.optJSONArray("data")
+            if (data == null || data.length() == 0) {
+                return@withContext "No relevant past conversations found."
+            }
+            
+            val results = mutableListOf<String>()
+            for (i in 0 until data.length()) {
+                val row = data.optJSONArray(i) ?: continue
+                val transcript = row.optString(0, "")
+                val sim = row.optDouble(1, 0.0)
+                if (transcript.isNotBlank() && sim > 0.4) { // Only return decently relevant hits
+                    results.add("Past context: $transcript")
+                }
+            }
+            
+            if (results.isEmpty()) return@withContext "No highly relevant past conversations found."
+            
+            Log.i("SnowflakeManager", "Found ${results.size} relevant past conversations.")
+            results.joinToString("\n---\n")
+            
+        } catch (e: Exception) {
+            Log.e("SnowflakeManager", "Error searching past conversations: ${e.message}")
+            "Error retrieving memory."
+        }
+    }
+
     fun close() {
         Log.i("SnowflakeManager", "Session closed")
     }

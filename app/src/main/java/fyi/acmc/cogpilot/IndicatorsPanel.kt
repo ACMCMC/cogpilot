@@ -51,6 +51,9 @@ class IndicatorsPanel(context: Context) : LinearLayout(context) {
         
         // Row 7: Speed Variance & Driver Profile
         addRow("speed_variance", "🏎️ Speed Var", "0.00", "driver_profile", "👤 Driver Profile", "unknown")
+        
+        // Row 8: ONNX Status
+        addRow("onnx_status", "🤖 ONNX Model", "active", "onnx_risk", "📊 ONNX Score", "0.00")
     }
 
     private fun addRow(key1: String, label1: String, default1: String, key2: String, label2: String, default2: String) {
@@ -129,7 +132,8 @@ class IndicatorsPanel(context: Context) : LinearLayout(context) {
         driverProfile: String,
         vocalEnergyTrend: Float,
         latencyTrend: Float,
-        speedVariance: Float
+        speedVariance: Float,
+        onnxRiskScore: Float = 0f
     ) {
         val kssValue = when {
             attentionScore >= 0.9f -> 1 // Extremely alert
@@ -156,6 +160,7 @@ class IndicatorsPanel(context: Context) : LinearLayout(context) {
         indicatorViews["driver_profile"]?.text = driverProfile.replaceFirstChar { it.uppercase() }
         indicatorViews["vocal_trend"]?.text = String.format("%.2f", vocalEnergyTrend)
         indicatorViews["latency_trend"]?.text = String.format("%.2f", latencyTrend)
+        indicatorViews["onnx_risk"]?.text = String.format("%.2f", onnxRiskScore)
         
         // Color code the risk state
         val riskView = indicatorViews["risk_state"]

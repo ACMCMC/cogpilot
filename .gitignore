@@ -1,3 +1,5 @@
+scripts/ravdess_data/
+ravdess_data/
 .idea/
 *.iml
 .gradle

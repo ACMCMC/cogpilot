@@ -82,6 +82,7 @@ class VoiceAgentService : Service() {
 
         private var _riskEngine: RiskDecisionEngine? = null
         val riskEngine: RiskDecisionEngine? get() = _riskEngine
+        var riskEngineInstance: RiskDecisionEngine? = null
     }
 
     private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
@@ -98,6 +99,9 @@ class VoiceAgentService : Service() {
     private val currentSessionMessages = mutableListOf<String>()
     // Track transcript with timing for audio extraction
     private val timedTranscript = mutableListOf<TranscriptEntry>()
+
+    // ONNX Real-time Loop
+    private var microphoneAnalyzer: MicrophoneAnalyzer? = null
 
     // hold context updates until connected
     private var pendingTopics: String? = null
@@ -139,6 +143,9 @@ class VoiceAgentService : Service() {
         if (_riskEngine == null) {
             _riskEngine = RiskDecisionEngine(this)
         }
+        
+        // Expose public static access to the engine for tests or other components
+        riskEngineInstance = _riskEngine
 
         // Verify credentials for headless startup compliance
         verifyCredentials()
@@ -233,6 +240,14 @@ class VoiceAgentService : Service() {
 
         // Start RiskDecisionEngine trip
         _riskEngine?.startTrip(currentDriverId, 7) // Hardcoded 7h sleep for now
+
+        // Start MicrophoneAnalyzer for ONNX telemetry
+        if (microphoneAnalyzer == null) {
+            _riskEngine?.let { engine ->
+                microphoneAnalyzer = MicrophoneAnalyzer(engine)
+            }
+        }
+        microphoneAnalyzer?.start()
 
         serviceScope.launch {
             try {
@@ -341,6 +356,13 @@ $historyContext$calendarContextStr"""
                     |- NO VEHICLE CONTROL: You CANNOT control the car, windows, climate, or any vehicle systems.
                     |- INFORMATIONAL ONLY: Search results (nearby places) are for driver AWARENESS only. 
                     |  Frame them as: "I found a [Place] about [X] miles away," NEVER "I'll navigate you to [Place]."
+                    |
+                    |TOOL USAGE CUES:
+                    |- Use `get_driving_status` during the conversation to silently check their telemetry if they sound tired.
+                    |- Use `search_past_conversations` dynamically if they refer to something you talked about previously, or to bridge topics organically.
+                    |- Use `search_nearby_places` if they complain about being hungry, tired, or needing gas.
+                    |- Use `set_sleep_hours` immediately after asking the driver how much they slept in the PRE_TRIP check-in.
+                    |- Use `update_agentic_attention_score` to explicitly log your AI-judgment of their alertness (0.0=asleep, 1.0=wide awake) if you notice their mood or responsiveness change.
                     |
                     |INTERACTION LEVELS (MANDATORY CONSTRAINTS):
                     |Level 0: ACTIVE SILENCE. Do not speak unless spoken to.
@@ -671,6 +693,15 @@ $historyContext$calendarContextStr"""
                                 Log.d(TAG, "Real Places response: $response")
                                 return ClientToolResult.success(response.toString())
                             }
+                        },
+                        "search_past_conversations" to object : ClientTool {
+                            override suspend fun execute(parameters: Map<String, Any>): ClientToolResult? {
+                                val query = parameters["param_query"] as? String ?: parameters["query"] as? String ?: return ClientToolResult.success("No query provided")
+                                Log.i(TAG, "📢 Agent searching past memory: $query")
+                                
+                                val pastContext = snowflakeManager.searchPastConversations(currentDriverId, query)
+                                return ClientToolResult.success(pastContext)
+                            }
                         }
                     )
                 )
@@ -700,6 +731,11 @@ $historyContext$calendarContextStr"""
 
     private fun stopVoiceSession() {
         Log.i(TAG, "🛑 Stopping voice session via performCleanupAndStop (user action)...")
+        isRunning = false
+
+        // Stop MicrophoneAnalyzer
+        microphoneAnalyzer?.stop()
+        microphoneAnalyzer = null
         performCleanupAndStop()
     }
 
@@ -777,13 +813,20 @@ $historyContext$calendarContextStr"""
                             snowflakeManager.updateLastTripSummary(currentDriverId, sessionSummary)
                         }
                         
+                        // NEW: Store raw conversational text for semantic vector search memory
+                        if (timedTranscript.isNotEmpty()) {
+                            val rawTranscript = timedTranscript.joinToString("\n") { "${it.speaker}: ${it.text}" }
+                            Log.i(TAG, "🧠 Storing conversation transcript for semantic memory...")
+                            snowflakeManager.storeConversationEmbedding(currentDriverId, rawTranscript)
+                        }
+                        
                         // Download and analyze conversation audio
                         if (sessionConversationId.isNotEmpty() && timedTranscript.isNotEmpty()) {
                             Log.i(TAG, "🎙️ Downloading conversation audio for analysis...")
                             downloadAndAnalyzeAudio()
                         }
                     } catch (e: Exception) {
-                        Log.e(TAG, "Error generating/saving session summary: ${e.message}")
+                        Log.e(TAG, "Error saving session memory/summary: ${e.message}")
                     }
                 }
             }
@@ -860,30 +903,32 @@ $historyContext$calendarContextStr"""
             currentDriveMinutes = debugInfo.driveMinutes
             currentVocalEnergy = debugInfo.vocalEnergy
             currentResponseLatency = debugInfo.responseLatencyMs
-            currentRoadType = debugInfo.roadType?.name?.lowercase() ?: "mixed"
-            currentCircadianWindow = debugInfo.circadianWindow?.name?.lowercase() ?: "normal"
-            currentDriverProfile = debugInfo.driverProfile
-            currentVocalEnergyTrend = debugInfo.vocalEnergyTrend
-            currentLatencyTrend = debugInfo.latencyTrend
-            currentSpeedVariance = debugInfo.speedVariance
-        }
-        
+            val roadType = _riskEngine?.getRoadType()?.name ?: "mixed"
+        val circadian = _riskEngine?.circadianWindow?.name ?: "normal"
+        val profile = _riskEngine?.getDriverId() ?: "unknown"
+        val vocalTrend = _riskEngine?.currentVocalEnergyTrend ?: 0f
+        val latencyTrend = _riskEngine?.currentLatencyTrend ?: 0f
+        val speedVar = _riskEngine?.getSpeedVariance() ?: 0f
+        val onnxScore = _riskEngine?.getLastOnnxRiskScore() ?: 0f
+
         val intent = Intent(ACTION_INDICATORS_UPDATE).apply {
-            putExtra(EXTRA_ATTENTION_SCORE, currentAttentionScore)
+            putExtra(EXTRA_ATTENTION_SCORE, currentAttentionScore) // Assuming 'attention' was meant to be currentAttentionScore
             putExtra(EXTRA_VAD_SCORE, currentVadScore)
-            putExtra(EXTRA_INTERACTION_LEVEL, currentInteractionLevel)
             putExtra(EXTRA_MODE, currentMode)
             putExtra(EXTRA_RISK_STATE, currentRiskState)
-            putExtra(EXTRA_DRIVE_MINUTES, currentDriveMinutes)
+            putExtra(EXTRA_INTERACTION_LEVEL, currentInteractionLevel)
+            putExtra(EXTRA_DRIVE_MINUTES, _riskEngine?.driveMinutes ?: 0)
             putExtra(EXTRA_VOCAL_ENERGY, currentVocalEnergy)
             putExtra(EXTRA_RESPONSE_LATENCY, currentResponseLatency)
-            putExtra(EXTRA_ROAD_TYPE, currentRoadType)
-            putExtra(EXTRA_CIRCADIAN_WINDOW, currentCircadianWindow)
-            putExtra(EXTRA_DRIVER_PROFILE, currentDriverProfile)
-            putExtra(EXTRA_VOCAL_ENERGY_TREND, currentVocalEnergyTrend)
-            putExtra(EXTRA_LATENCY_TREND, currentLatencyTrend)
-            putExtra(EXTRA_SPEED_VARIANCE, currentSpeedVariance)
-            setPackage(packageName)
+            putExtra(EXTRA_ROAD_TYPE, roadType)
+            putExtra(EXTRA_CIRCADIAN_WINDOW, circadian)
+            putExtra(EXTRA_DRIVER_PROFILE, profile)
+            putExtra(EXTRA_VOCAL_ENERGY_TREND, vocalTrend)
+            putExtra(EXTRA_LATENCY_TREND, latencyTrend)
+            putExtra(EXTRA_SPEED_VARIANCE, speedVar)
+            putExtra("onnx_risk_score", onnxScore)
+        }
+    setPackage(packageName)
         }
         sendBroadcast(intent)
     }

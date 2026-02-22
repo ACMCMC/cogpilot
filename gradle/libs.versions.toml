@@ -15,6 +15,7 @@ mockito = "5.11.0"
 orgJson = "20240303"
 gson = "2.10.1"
 carApp = "1.4.0-rc01"
+onnxruntime = "1.15.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -32,6 +33,7 @@ mockito-core = { group = "org.mockito", name = "mockito-core", version.ref = "mo
 org-json = { group = "org.json", name = "json", version.ref = "orgJson" }
 gson = { group = "com.google.code.gson", name = "gson", version.ref = "gson" }
 androidx-car-app = { group = "androidx.car.app", name = "app", version.ref = "carApp" }
+onnxruntime-android = { group = "com.microsoft.onnxruntime", name = "onnxruntime-android", version.ref = "onnxruntime" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

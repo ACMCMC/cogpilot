@@ -59,6 +59,11 @@ class RiskDecisionEngine(private val context: Context) {
     private var isInteractionActive: Boolean = false
     private var lastInteractionEndTime: Long = 0L
 
+    // ONNX Model Integration
+    private var onnxDetector: IDrowsinessDetector? = null
+    private val featureExtractor = AudioFeatureExtractor()
+    private var lastOnnxRiskScore: Float = 0.0f
+
     // Current session data
     private var lastLocation: Location? = null
     private var lastVocalEnergy: Float = 0.8f
@@ -95,6 +100,16 @@ class RiskDecisionEngine(private val context: Context) {
 
     fun startTrip(userId: String, sleepHours: Int) {
         Log.i(TAG, "🚗 Trip started: $userId, sleep=$sleepHours hrs")
+        
+        // Initialize ONNX detector if not already set (e.g. by a test)
+        if (onnxDetector == null) {
+            try {
+                onnxDetector = OnnxDrowsinessDetector(context)
+            } catch (e: Throwable) {
+                Log.w(TAG, "⚠️ Could not initialize ONNX detector (likely unit test environment): ${e.message}")
+            }
+        }
+        
         tripStartTime = System.currentTimeMillis()
         lastDecisionTime = tripStartTime
         sleepHoursToday = sleepHours
@@ -165,9 +180,31 @@ class RiskDecisionEngine(private val context: Context) {
         Log.i(TAG, "🧠 Agentic Attention Updated: $agenticAttentionScore")
     }
 
+    /**
+     * updateOnnxAudioTelemetry: Called by MicrophoneAnalyzer with live PCM data.
+     * Runs ONNX inference and updates the internal ONNX risk score.
+     */
+    fun updateOnnxAudioTelemetry(pcmData: FloatArray) {
+        if (onnxDetector == null) return
+        
+        try {
+            val prediction = onnxDetector?.predict(pcmData) ?: 0.0f
+            lastOnnxRiskScore = prediction
+            Log.d(TAG, "🤖 ONNX Model Inference Result: $prediction")
+            
+            // Trigger a re-calculation immediately if we are driving
+            if (!isParked && tripStartTime > 0) {
+                evaluateRiskState()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error running ONNX inference: ${e.message}")
+        }
+    }
+
     fun getLastLocation(): Location? = lastLocation
     fun getRoadType(): RoadType = currentRoadType
     fun getTrafficCondition(): TrafficCondition = trafficCondition
+    fun getLastOnnxRiskScore(): Float = lastOnnxRiskScore
 
     // ========================================================================
     // SNOWFLAKE: Load driver profile + memory
@@ -295,10 +332,15 @@ class RiskDecisionEngine(private val context: Context) {
         val baseFatigueRisk = (energyRisk * 0.15f + latencyRisk * 0.20f + paceRisk * 0.15f + agenticRisk * 0.10f)
 
         // 3. Combined Session Risk Score (Telemetry + Environment)
-        val sessionRiskScore = (baseFatigueRisk + envFatigueModifier).coerceIn(0f, 1.1f)
+        val deterministicRiskScore = (baseFatigueRisk + envFatigueModifier).coerceIn(0f, 1.1f)
 
-        // 4. Final Effective Risk Score (No artificial suppression multipliers)
-        val effectiveRiskScore = sessionRiskScore
+        // 4. Final Effective Risk Score: 50/50 blend with ONNX model
+        // If ONNX hasn't run yet, we default to the deterministic score
+        val effectiveRiskScore = if (lastOnnxRiskScore > 1e-5) {
+            (deterministicRiskScore * 0.5f) + (lastOnnxRiskScore * 0.5f)
+        } else {
+            deterministicRiskScore
+        }
 
         val newRiskState = when {
             effectiveRiskScore >= 0.95f -> RiskState.CRITICAL
@@ -587,35 +629,63 @@ class RiskDecisionEngine(private val context: Context) {
         if (responseLatencyHistory.size > 10) responseLatencyHistory.poll()
 
         wordsPerSecondHistory.add(wordsPerSecond)
-        if (wordsPerSecondHistory.size > 10) wordsPerSecondHistory.poll()
-
         Log.d(TAG, "📊 Voice: energy=$vocalEnergy, latency=${responseLatencyMs}ms, wps=$wordsPerSecond, vad=$vadScore")
     }
 
-    fun updateDriverResponse(responseType: UserResponseType, latencyMs: Float) {
-        lastUserResponse = responseType
-        lastResponseLatencyMs = latencyMs
-        Log.d(TAG, "💬 Driver response: $responseType (${latencyMs}ms)")
+    /**
+     * Updates the engine with raw audio for ONNX-based drowsiness detection.
+     * Processes the audio through feature extraction and model inference.
+     */
+    fun updateOnnxAudioTelemetry(audio: FloatArray) {
+        val features = featureExtractor.extractFeatures(audio)
+        lastOnnxRiskScore = onnxDetector?.predict(features) ?: 0.0f
+        Log.d(TAG, "🤖 ONNX Model Inference Result: ${String.format("%.4f", lastOnnxRiskScore)}")
     }
 
-    // ========================================================================
-    // DEBUG / TELEMETRY
-    // ========================================================================
+    /**
+     * For Unit Testing: allows manually setting a mock detector.
+     */
+    fun setDrowsinessDetector(detector: IDrowsinessDetector) {
+        this.onnxDetector = detector
+    }
 
-    fun getRiskStateDebugInfo(): RiskDebugInfo {
-        val driveMinutes = ((System.currentTimeMillis() - tripStartTime) / 60_000).toInt()
-        return RiskDebugInfo(
+    /**
+     * Directly update the last known ONNX score (e.g. if processed elsewhere).
+     */
+    fun updateOnnxRiskScore(score: Float) {
+        lastOnnxRiskScore = score
+    }
+
+    fun getRiskStateDebugInfo(): RiskInfo {
+        val now = System.currentTimeMillis()
+        val sessionMinutes = ((now - tripStartTime) / 60_000).toInt()
+        
+        // Use the same formula as evaluateRiskState for the debug score
+        val envFactors = calculateThresholdModifier(sessionMinutes)
+        val vocalEnergyTrend = calculateVocalEnergyTrend()
+        val latencyTrend = calculateLatencyTrend()
+        val paceTrend = calculatePaceTrend()
+        val energyRisk = ((0.8f - vocalEnergyTrend) / (0.8f - 0.35f)).coerceIn(0f, 1f)
+        val latencyRisk = ((latencyTrend - 500f) / (3000f - 500f)).coerceIn(0f, 1f)
+        val paceRisk = ((2.5f - paceTrend) / (2.5f - 1.0f)).coerceIn(0f, 1f)
+        val agenticRisk = (1.0f - agenticAttentionScore).coerceIn(0f, 1f)
+        val baseFatigueRisk = (energyRisk * 0.15f + latencyRisk * 0.20f + paceRisk * 0.15f + agenticRisk * 0.10f)
+        
+        val detScore = (baseFatigueRisk + envFactors.total).coerceIn(0f, 1.1f)
+        val finalScore = if (lastOnnxRiskScore > 1e-5) (detScore * 0.5f) + (lastOnnxRiskScore * 0.5f) else detScore
+
+        return RiskInfo(
             riskState = currentRiskState,
             interactionLevel = currentInteractionLevel,
-            driveMinutes = driveMinutes,
+            driveMinutes = sessionMinutes,
+            riskScore = finalScore,
             vocalEnergy = lastVocalEnergy,
             responseLatencyMs = lastResponseLatencyMs,
-            vadScore = lastVadScore,
             roadType = currentRoadType,
             circadianWindow = circadianWindow,
             driverProfile = driverProfile?.name ?: "unknown",
-            vocalEnergyTrend = calculateVocalEnergyTrend(),
-            latencyTrend = calculateLatencyTrend(),
+            vocalEnergyTrend = vocalEnergyTrend,
+            latencyTrend = latencyTrend,
             speedVariance = calculateSpeedVariance()
         )
     }
@@ -723,13 +793,13 @@ data class DriverMemory(
     val confidence: Float
 )
 
-data class RiskDebugInfo(
+data class RiskInfo(
     val riskState: RiskState,
     val interactionLevel: Int,
     val driveMinutes: Int,
+    val riskScore: Float,
     val vocalEnergy: Float,
     val responseLatencyMs: Float,
-    val vadScore: Float,
     val roadType: RoadType,
     val circadianWindow: CircadianWindow,
     val driverProfile: String,

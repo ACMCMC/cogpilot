@@ -80,14 +80,6 @@ class MainActivity : AppCompatActivity() {
         val rootView = uiManager.createUI()
         setContentView(rootView)
         
-        // Ensure Spotify is authorized while in the foreground
-        lifecycleScope.launch(kotlinx.coroutines.Dispatchers.Main) {
-            try {
-                SpotifyManager(this@MainActivity).authorize()
-            } catch (e: Exception) {
-                Log.e("CogPilot", "Spotify auth trigger failed: ${e.message}")
-            }
-        }
         // Make content respect the status bar and navigation bar heights.
         // The scroll view background fills edge-to-edge; the padding keeps content visible.
         androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(rootView) { v, insets ->
@@ -186,11 +178,12 @@ class MainActivity : AppCompatActivity() {
                         val vocalTrend = intent.getFloatExtra(VoiceAgentService.EXTRA_VOCAL_ENERGY_TREND, 0f)
                         val latencyTrend = intent.getFloatExtra(VoiceAgentService.EXTRA_LATENCY_TREND, 0f)
                         val speedVar = intent.getFloatExtra(VoiceAgentService.EXTRA_SPEED_VARIANCE, 0f)
+                        val onnxRisk = intent.getFloatExtra("onnx_risk_score", 0f)
                         
                         uiManager.updateIndicators(
                             attention, vad, mode, risk, level,
                             driveMinutes, vocalEnergy, latency, roadType, circadian, profile,
-                            vocalTrend, latencyTrend, speedVar
+                            vocalTrend, latencyTrend, speedVar, onnxRisk
                         )
                     }
                 }
