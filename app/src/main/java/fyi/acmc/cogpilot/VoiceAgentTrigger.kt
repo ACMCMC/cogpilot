@@ -26,11 +26,22 @@ object VoiceAgentTrigger {
     }
 
     fun stop(context: Context) {
-        Log.i(TAG, "Stopping voice agent")
+        Log.i(TAG, "🛑 Stopping voice agent")
         val intent = Intent(context, VoiceAgentService::class.java).apply {
             action = VoiceAgentService.ACTION_STOP
         }
-        context.stopService(intent)
+        try {
+            // sendthe STOP action through startForegroundService so onStartCommand gets called
+            ContextCompat.startForegroundService(context, intent)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to stop: ${e.message}")
+            // fallback to stopService
+            try {
+                context.stopService(intent)
+            } catch (ex: Exception) {
+                Log.e(TAG, "Fallback stopService also failed: ${ex.message}")
+            }
+        }
     }
 
     fun toggle(context: Context, isRunning: Boolean, source: String = "manual") {

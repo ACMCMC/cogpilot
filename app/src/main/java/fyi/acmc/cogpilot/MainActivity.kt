@@ -2,6 +2,7 @@ package fyi.acmc.cogpilot
 
 import android.Manifest
 import android.app.UiModeManager
+import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
 import android.os.Bundle
@@ -37,6 +38,8 @@ class MainActivity : AppCompatActivity() {
     private var lastAutoTriggerTime = 0L
 
     private lateinit var uiManager: UIManager
+    
+    private var voiceStatusReceiver: android.content.BroadcastReceiver? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -64,11 +67,7 @@ class MainActivity : AppCompatActivity() {
             if (connected) {
                 Log.i("CogPilot", "✓ Snowflake Connected")
                 uiManager.setConnectionStatus("✓ Connected", "#4CAF50")
-                
-                locationCapture.startCapture(snowflakeManager) { speed, heading ->
-                    uiManager.updateMetrics(speed, heading)
-                }
-                
+                // location capture starts after permissions are confirmed
                 updateRiskPeriodically()
             } else {
                 Log.e("CogPilot", "✗ Failed to connect to Snowflake")
@@ -82,11 +81,54 @@ class MainActivity : AppCompatActivity() {
         VoiceSessionController.onTrigger = {
             onVoiceTrigger()
         }
+        
+        // Register receiver to listen for voice agent status changes
+        if (voiceStatusReceiver == null) {
+            voiceStatusReceiver = object : android.content.BroadcastReceiver() {
+                override fun onReceive(context: Context, intent: Intent) {
+                    if (intent.action == VoiceAgentService.ACTION_STATUS_CHANGE) {
+                        val status = intent.getStringExtra(VoiceAgentService.EXTRA_STATUS) ?: return
+                        Log.d("CogPilot", "Voice status changed: $status")
+                        when (status) {
+                            "connected" -> {
+                                voiceActive = true
+                                uiManager.setVoiceState(true)
+                            }
+                            "disconnected" -> {
+                                voiceActive = false
+                                uiManager.setVoiceState(false)
+                            }
+                            "error" -> {
+                                voiceActive = false
+                                uiManager.setVoiceState(false)
+                            }
+                        }
+                    }
+                }
+            }
+            val filter = android.content.IntentFilter(VoiceAgentService.ACTION_STATUS_CHANGE)
+            androidx.core.content.ContextCompat.registerReceiver(
+                this,
+                voiceStatusReceiver,
+                filter,
+                androidx.core.content.ContextCompat.RECEIVER_EXPORTED
+            )
+        }
     }
 
     override fun onStop() {
         super.onStop()
         VoiceSessionController.onTrigger = null
+        
+        // Unregister the broadcast receiver
+        if (voiceStatusReceiver != null) {
+            try {
+                unregisterReceiver(voiceStatusReceiver)
+            } catch (e: Exception) {
+                Log.e("CogPilot", "Error unregistering receiver: ${e.message}")
+            }
+            voiceStatusReceiver = null
+        }
     }
 
     private fun onVoiceToggle() {
@@ -166,6 +208,8 @@ class MainActivity : AppCompatActivity() {
     private fun requestRequiredPermissions() {
         val permissions = arrayOf(
             Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+            Manifest.permission.RECORD_AUDIO,
             Manifest.permission.INTERNET
         )
 
@@ -174,8 +218,36 @@ class MainActivity : AppCompatActivity() {
         }.toTypedArray()
 
         if (missing.isNotEmpty()) {
-            Log.i("CogPilot", "Requesting: ${missing.joinToString(", ")}")
+            Log.i("CogPilot", "🔐 Requesting permissions: ${missing.joinToString(", ")}")
             ActivityCompat.requestPermissions(this, missing, 100)
+        } else {
+            Log.i("CogPilot", "✓ All permissions already granted")
+            onPermissionsGranted()
+        }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 100) {
+            val allGranted = grantResults.all { it == android.content.pm.PackageManager.PERMISSION_GRANTED }
+            if (allGranted) {
+                Log.i("CogPilot", "✓ All permissions granted by user")
+                onPermissionsGranted()
+            } else {
+                val denied = permissions.zip(grantResults.toList())
+                    .filter { it.second != android.content.pm.PackageManager.PERMISSION_GRANTED }
+                    .map { it.first }
+                Log.w("CogPilot", "⚠️ Permissions denied: $denied")
+            }
+        }
+    }
+
+    private fun onPermissionsGranted() {
+        Log.i("CogPilot", "Starting location capture with permissions...")
+        lifecycleScope.launch {
+            locationCapture.startCapture(snowflakeManager) { speed, heading ->
+                uiManager.updateMetrics(speed, heading)
+            }
         }
     }
 

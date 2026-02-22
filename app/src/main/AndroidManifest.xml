@@ -38,8 +38,23 @@
         <receiver
             android:name=".VoiceTriggerReceiver"
             android:exported="true">
+            <!-- Custom trigger for testing -->
             <intent-filter>
                 <action android:name="fyi.acmc.cogpilot.action.TRIGGER_VOICE" />
+            </intent-filter>
+            <!-- Google Assistant voice commands -->
+            <intent-filter>
+                <action android:name="com.google.android.gms.actions.VOICE_COMMAND" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <!-- Generic voice recognition -->
+            <intent-filter>
+                <action android:name="android.intent.action.VOICE_COMMAND" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
+                <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </receiver>
 

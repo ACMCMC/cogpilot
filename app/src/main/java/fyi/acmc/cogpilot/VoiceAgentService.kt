@@ -51,14 +51,22 @@ class VoiceAgentService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.i(TAG, "onStartCommand: ${intent?.action}")
         
-        createNotificationChannel()
-        val notification = createNotification("Initializing voice agent...")
-        startForeground(NOTIFICATION_ID, notification)
-
         when (intent?.action) {
-            ACTION_START -> startVoiceSession()
-            ACTION_STOP -> stopVoiceSession()
-            else -> Log.d(TAG, "Unknown action: ${intent?.action}")
+            ACTION_START -> {
+                createNotificationChannel()
+                val notification = createNotification("Initializing voice agent...")
+                startForeground(NOTIFICATION_ID, notification)
+                startVoiceSession()
+            }
+            ACTION_STOP -> {
+                Log.i(TAG, "Stop action received, ending session...")
+                stopVoiceSession()
+            }
+            else -> {
+                Log.d(TAG, "Unknown action: ${intent?.action}")
+                // Don't start foreground for unknown actions
+                stopSelf()
+            }
         }
 
         return START_STICKY
@@ -142,13 +150,29 @@ class VoiceAgentService : Service() {
     private fun stopVoiceSession() {
         Log.i(TAG, "🛑 Stopping voice session...")
         isRunning = false
-        serviceScope.launch {
-            try {
-                session?.endSession()
-                session = null
-            } catch (e: Exception) {
-                Log.e(TAG, "Stop error: ${e.message}")
+        
+        try {
+            // end the conversation immediately
+            if (session != null) {
+                Log.d(TAG, "Ending conversation session...")
+                serviceScope.launch {
+                    try {
+                        session?.endSession()
+                        Log.i(TAG, "✓ Session ended successfully")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error ending session: ${e.message}", e)
+                    } finally {
+                        session = null
+                        Log.i(TAG, "Stopping service...")
+                        stopSelf()
+                    }
+                }
+            } else {
+                Log.d(TAG, "No active session to end")
+                stopSelf()
             }
+        } catch (e: Exception) {
+            Log.e(TAG, "Stop error: ${e.message}", e)
             stopSelf()
         }
     }
