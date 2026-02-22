@@ -9,7 +9,9 @@ import android.os.Bundle
 import android.os.Looper
 import androidx.core.content.PermissionChecker
 import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
@@ -26,6 +28,7 @@ class LocationCapture(private val context: Context) {
     private var locationListener: LocationListener? = null
     private var captureCallback: ((speed: Float, heading: Float) -> Unit)? = null
     private var snowflakeManager: SnowflakeManager? = null
+    private val mapsClient = MapsRoadsClient(context)
 
     fun startCapture(
         snowflakeManager: SnowflakeManager,
@@ -57,12 +60,26 @@ class LocationCapture(private val context: Context) {
                 // Insert into Snowflake directly
                 snowflakeManager?.let {
                     (context as? androidx.appcompat.app.AppCompatActivity)?.lifecycleScope?.launch {
+                        val roadCtx = withContext(Dispatchers.IO) {
+                            mapsClient.getRoadContext(location.latitude, location.longitude)
+                        }
+                        val roadType = roadCtx.types.firstOrNull()
+                        val roadTypesStr = if (roadCtx.types.isNotEmpty()) roadCtx.types.joinToString(",") else null
+                        val speedOver = roadCtx.speedLimitMph?.let { limit -> speed - limit }
+
                         it.insertTelemetry(
                             timestamp = System.currentTimeMillis(),
                             speed = speed,
                             heading = heading,
                             lat = location.latitude,
-                            lon = location.longitude
+                            lon = location.longitude,
+                            roadPlaceId = roadCtx.placeId,
+                            roadTypes = roadTypesStr,
+                            roadType = roadType,
+                            speedLimit = roadCtx.speedLimitMph,
+                            speedUnit = roadCtx.speedUnit,
+                            trafficRatio = roadCtx.trafficRatio,
+                            speedOverLimit = speedOver
                         )
                     }
                 }

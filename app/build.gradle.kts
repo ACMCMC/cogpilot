@@ -53,6 +53,7 @@ android {
         buildConfigField("String", "SNOWFLAKE_ROLE", "\"${getEnvOrProperty("SNOWFLAKE_ROLE", "ACCOUNTADMIN")}\"")
         buildConfigField("String", "ELEVENLABS_API_KEY", "\"${getEnvOrProperty("ELEVENLABS_API_KEY")}\"")
         buildConfigField("String", "ELEVENLABS_AGENT_ID", "\"${getEnvOrProperty("ELEVENLABS_AGENT_ID")}\"")
+        buildConfigField("String", "GOOGLE_MAPS_API_KEY", "\"${getEnvOrProperty("GOOGLE_MAPS_API_KEY")}\"")
     }
 
     buildTypes {

@@ -34,6 +34,13 @@ class SnowflakeManager {
                 heading FLOAT NOT NULL,
                 latitude FLOAT NOT NULL,
                 longitude FLOAT NOT NULL,
+                road_place_id VARCHAR,
+                road_types VARCHAR,
+                road_type VARCHAR,
+                speed_limit FLOAT,
+                speed_unit VARCHAR,
+                traffic_ratio FLOAT,
+                speed_over_limit FLOAT,
                 user_text VARCHAR,
                 sentiment_score FLOAT,
                 risk_score FLOAT,
@@ -41,6 +48,15 @@ class SnowflakeManager {
                 PRIMARY KEY (id)
             )
         """.trimIndent())
+
+        // add new columns if table already existed
+        sqlApi.execute("ALTER TABLE DRIVER_LOGS ADD COLUMN IF NOT EXISTS road_place_id VARCHAR")
+        sqlApi.execute("ALTER TABLE DRIVER_LOGS ADD COLUMN IF NOT EXISTS road_types VARCHAR")
+        sqlApi.execute("ALTER TABLE DRIVER_LOGS ADD COLUMN IF NOT EXISTS road_type VARCHAR")
+        sqlApi.execute("ALTER TABLE DRIVER_LOGS ADD COLUMN IF NOT EXISTS speed_limit FLOAT")
+        sqlApi.execute("ALTER TABLE DRIVER_LOGS ADD COLUMN IF NOT EXISTS speed_unit VARCHAR")
+        sqlApi.execute("ALTER TABLE DRIVER_LOGS ADD COLUMN IF NOT EXISTS traffic_ratio FLOAT")
+        sqlApi.execute("ALTER TABLE DRIVER_LOGS ADD COLUMN IF NOT EXISTS speed_over_limit FLOAT")
 
         sqlApi.execute("""
             CREATE TABLE IF NOT EXISTS USER_PROFILE (
@@ -71,11 +87,36 @@ class SnowflakeManager {
         Log.i("SnowflakeManager", "✓ Schema initialized")
     }
 
-    suspend fun insertTelemetry(timestamp: Long, speed: Float, heading: Float, lat: Double, lon: Double) {
+    suspend fun insertTelemetry(
+        timestamp: Long,
+        speed: Float,
+        heading: Float,
+        lat: Double,
+        lon: Double,
+        roadPlaceId: String? = null,
+        roadTypes: String? = null,
+        roadType: String? = null,
+        speedLimit: Float? = null,
+        speedUnit: String? = null,
+        trafficRatio: Float? = null,
+        speedOverLimit: Float? = null
+    ) {
         withContext(Dispatchers.IO) {
+            // tiny helper for safe SQL strings, keep it sloppy but valid
+            fun sqlStr(value: String?): String = value?.replace("'", "''")?.let { "'$it'" } ?: "NULL"
+            fun sqlNum(value: Float?): String = value?.let { it.toString() } ?: "NULL"
+
             val sql = """
-                INSERT INTO DRIVER_LOGS (timestamp, speed, heading, latitude, longitude)
-                VALUES ($timestamp, $speed, $heading, $lat, $lon)
+                INSERT INTO DRIVER_LOGS (
+                    timestamp, speed, heading, latitude, longitude,
+                    road_place_id, road_types, road_type,
+                    speed_limit, speed_unit, traffic_ratio, speed_over_limit
+                )
+                VALUES (
+                    $timestamp, $speed, $heading, $lat, $lon,
+                    ${sqlStr(roadPlaceId)}, ${sqlStr(roadTypes)}, ${sqlStr(roadType)},
+                    ${sqlNum(speedLimit)}, ${sqlStr(speedUnit)}, ${sqlNum(trafficRatio)}, ${sqlNum(speedOverLimit)}
+                )
             """.trimIndent()
             sqlApi.execute(sql)
             Log.d("SnowflakeManager", "Telemetry inserted: speed=$speed, heading=$heading")
