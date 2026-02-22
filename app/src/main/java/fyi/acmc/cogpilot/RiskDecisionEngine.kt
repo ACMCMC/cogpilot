@@ -29,18 +29,24 @@ class RiskDecisionEngine(private val context: Context) {
 
     companion object {
         const val TAG = "RiskDecisionEngine"
-        const val DECISION_INTERVAL_MS = 15_000L  // 15 seconds
+        const val DECISION_INTERVAL_MS = 1_000L  // 1 second for live updates
+        const val GOOGLE_MAPS_THROTTLE_MS = 60_000L // 60 seconds
     }
 
     // State
+    private var lastRoadMetadataQueryTime: Long = 0L
+
     private var currentRiskState: RiskState = RiskState.STABLE
     private var currentInteractionLevel: Int = 0
     private var tripStartTime: Long = 0L
+    var isDriving: Boolean = false
+        private set
     private var tripStartVocalEnergy: Float = 1.0f
 
     // Rolling history (for trend analysis)
     private val vocalEnergyHistory = ConcurrentLinkedQueue<Float>()  // last 10 samples
     private val responseLatencyHistory = ConcurrentLinkedQueue<Float>()  // ms, last 10
+    private val wordsPerSecondHistory = ConcurrentLinkedQueue<Float>() // wps, last 10
     private val speedHistory = ConcurrentLinkedQueue<Float>()  // mph, last 30
     private val riskStateHistory = ConcurrentLinkedQueue<RiskState>()  // last 5 decisions
     private var cumulativeDriveMinutes: Int = 0 // Persistent across trips in same session
@@ -51,8 +57,10 @@ class RiskDecisionEngine(private val context: Context) {
     private var lastLocation: Location? = null
     private var lastVocalEnergy: Float = 0.8f
     private var lastResponseLatencyMs: Float = 500f
+    private var lastWordsPerSecond: Float = 2.5f
     private var lastVadScore: Float = 0.7f
     private var lastUserResponse: UserResponseType = UserResponseType.NONE
+    private var agenticAttentionScore: Float = 0.5f // Default to 50% neutral
 
     // Driver profile (loaded at trip start)
     private var driverProfile: DriverProfile? = null
@@ -62,6 +70,10 @@ class RiskDecisionEngine(private val context: Context) {
     private var currentRoadType: RoadType = RoadType.MIXED
     private var trafficCondition: TrafficCondition = TrafficCondition.MODERATE
 
+    // Telemetry Priority
+    private var lastVehicleSpeedMph: Float? = null
+    private var lastVehicleSpeedTime: Long = 0L
+
     // Circadian state
     private var circadianWindow: CircadianWindow = CircadianWindow.NORMAL
     private var sleepHoursToday: Int = 7
@@ -69,7 +81,7 @@ class RiskDecisionEngine(private val context: Context) {
 
     // Callbacks
     var onRiskStateChanged: ((RiskState, Int, String) -> Unit)? = null  // state, level, reason
-    var onRiskScoreUpdated: ((Float, RiskState) -> Unit)? = null // score, state
+    var onRiskScoreUpdated: ((Float, RiskState, String) -> Unit)? = null // score, state, breakdown
 
     // ========================================================================
     // LIFECYCLE
@@ -77,6 +89,7 @@ class RiskDecisionEngine(private val context: Context) {
 
     fun startTrip(userId: String, sleepHours: Int) {
         Log.i(TAG, "🚗 Trip started: $userId, sleep=$sleepHours hrs")
+        isDriving = true
         tripStartTime = System.currentTimeMillis()
         lastDecisionTime = tripStartTime
         sleepHoursToday = sleepHours
@@ -92,10 +105,13 @@ class RiskDecisionEngine(private val context: Context) {
 
     fun stopTrip() {
         Log.i(TAG, "🛑 Trip stopped. Total cumulative minutes: $cumulativeDriveMinutes")
+        isDriving = false
+        tripStartTime = 0L
         clearHistory()
         currentRiskState = RiskState.STABLE
         currentInteractionLevel = 0
         lastInteractionTime = 0L
+        onRiskScoreUpdated?.invoke(0f, RiskState.STABLE, "Not driving")
     }
 
     fun recordInteraction() {
@@ -111,6 +127,23 @@ class RiskDecisionEngine(private val context: Context) {
     fun updateTemperature(tempF: Float) {
         Log.d(TAG, "🌡️ Temperature updated: $tempF°F")
         ambientTemperatureF = tempF
+    }
+
+    fun updateVehicleSpeed(speedMs: Float) {
+        val speedMph = speedMs * 2.237f
+        lastVehicleSpeedMph = speedMph
+        lastVehicleSpeedTime = System.currentTimeMillis()
+        
+        // Push directly to history
+        speedHistory.add(speedMph)
+        if (speedHistory.size > 30) speedHistory.poll()
+        
+        Log.d(TAG, "🏎️ Vehicle Speed (Direct): $speedMph mph")
+    }
+
+    fun updateAgenticAttention(score: Float) {
+        agenticAttentionScore = score.coerceIn(0f, 1f)
+        Log.i(TAG, "🧠 Agentic Attention Updated: $agenticAttentionScore")
     }
 
     fun getLastLocation(): Location? = lastLocation
@@ -217,6 +250,7 @@ class RiskDecisionEngine(private val context: Context) {
 
         val currentVocalEnergyTrend = calculateVocalEnergyTrend()
         val currentLatencyTrend = calculateLatencyTrend()
+        val currentPaceTrend = calculatePaceTrend()
         val currentSpeedVariance = calculateSpeedVariance()
 
         // 1. Calculate Environmental Fatigue Modifier (0.0 to 0.45 range)
@@ -229,9 +263,16 @@ class RiskDecisionEngine(private val context: Context) {
         
         // Normalize Latency: 500ms (Baseline) -> 0.0 risk, 3000ms (Critical) -> 1.0 risk
         val latencyRisk = ((currentLatencyTrend - 500f) / (3000f - 500f)).coerceIn(0f, 1f)
+
+        // Normalize Pace: 2.5 wps (Baseline) -> 0.0 risk, 1.0 wps (Slurred/Slow) -> 1.0 risk
+        val paceRisk = ((2.5f - currentPaceTrend) / (2.5f - 1.0f)).coerceIn(0f, 1f)
+
+        // Agentic Risk: 1.0 (Fully attentive) -> 0.0 risk, 0.0 (Sleeping) -> 1.0 risk
+        val agenticRisk = (1.0f - agenticAttentionScore).coerceIn(0f, 1f)
         
         // Base fatigue is weighted telemetry (capped to 0.6 to leave room for environment)
-        val baseFatigueRisk = (energyRisk * 0.3f + latencyRisk * 0.3f)
+        // 15% Voice, 20% Latency, 15% Pace, 10% Agent
+        val baseFatigueRisk = (energyRisk * 0.15f + latencyRisk * 0.20f + paceRisk * 0.15f + agenticRisk * 0.10f)
 
         // 3. Combined Session Risk Score (Telemetry + Environment)
         val sessionRiskScore = (baseFatigueRisk + envFatigueModifier).coerceIn(0f, 1.1f)
@@ -268,15 +309,22 @@ class RiskDecisionEngine(private val context: Context) {
             val reason = "Score: ${String.format("%.2f", effectiveRiskScore)} | " + 
                         buildDecisionRationale(
                             newRiskState, newInteractionLevel, sessionMinutes,
-                            currentVocalEnergyTrend, currentLatencyTrend
+                            currentVocalEnergyTrend, currentLatencyTrend,
+                            baseFatigueRisk, envFatigueModifier
                         )
 
             Log.i(TAG, "🔄 Risk state changed: $newRiskState (Level $newInteractionLevel) - $reason")
             onRiskStateChanged?.invoke(newRiskState, newInteractionLevel, reason)
         }
 
+        val breakdownStr = buildDecisionRationale(
+            currentRiskState, currentInteractionLevel, sessionMinutes,
+            currentVocalEnergyTrend, currentLatencyTrend,
+            baseFatigueRisk, envFatigueModifier, agenticAttentionScore
+        )
+
         // Always notify of score update for UI/Android Auto updates
-        onRiskScoreUpdated?.invoke(effectiveRiskScore, newRiskState)
+        onRiskScoreUpdated?.invoke(effectiveRiskScore, newRiskState, breakdownStr)
 
         riskStateHistory.add(newRiskState)
         if (riskStateHistory.size > 5) riskStateHistory.poll()
@@ -295,6 +343,12 @@ class RiskDecisionEngine(private val context: Context) {
     private fun calculateLatencyTrend(): Float {
         if (responseLatencyHistory.size < 3) return lastResponseLatencyMs
         val recent = responseLatencyHistory.toList().takeLast(3)
+        return recent.average().toFloat()
+    }
+
+    private fun calculatePaceTrend(): Float {
+        if (wordsPerSecondHistory.size < 3) return lastWordsPerSecond
+        val recent = wordsPerSecondHistory.toList().takeLast(3)
         return recent.average().toFloat()
     }
 
@@ -430,11 +484,23 @@ class RiskDecisionEngine(private val context: Context) {
 
     fun updateLocation(location: Location) {
         lastLocation = location
-        speedHistory.add(location.speed * 2.237f)  // convert m/s to mph
-        if (speedHistory.size > 30) speedHistory.poll()
+        
+        // Priority check: Only use GPS speed if car hardware speed is stale (> 5 seconds)
+        val now = System.currentTimeMillis()
+        if (lastVehicleSpeedMph == null || (now - lastVehicleSpeedTime > 5000)) {
+            val gpsSpeedMph = location.speed * 2.237f
+            speedHistory.add(gpsSpeedMph)
+            if (speedHistory.size > 30) speedHistory.poll()
+            Log.d(TAG, "📍 GPS Speed (Fallback): $gpsSpeedMph mph")
+        }
 
-        // Query Google Maps Roads API async
-        queryRoadMetadata(location.latitude, location.longitude)
+        // Query Google Maps Roads API async (Throttled to 60 seconds to save quota)
+        if (now - lastRoadMetadataQueryTime >= GOOGLE_MAPS_THROTTLE_MS) {
+            lastRoadMetadataQueryTime = now
+            queryRoadMetadata(location.latitude, location.longitude)
+        } else {
+            Log.d(TAG, "🗺️ Maps API Throttled using cached road context.")
+        }
     }
 
     private fun queryRoadMetadata(lat: Double, lon: Double) {
@@ -460,10 +526,11 @@ class RiskDecisionEngine(private val context: Context) {
     // TELEMETRY UPDATES (from ElevenLabs)
     // ========================================================================
 
-    fun updateVoiceTelemetry(vocalEnergy: Float, responseLatencyMs: Float, vadScore: Float) {
+    fun updateVoiceTelemetry(vocalEnergy: Float, responseLatencyMs: Float, vadScore: Float, wordsPerSecond: Float = 2.5f) {
         lastVocalEnergy = vocalEnergy
         lastResponseLatencyMs = responseLatencyMs
         lastVadScore = vadScore
+        lastWordsPerSecond = wordsPerSecond
 
         vocalEnergyHistory.add(vocalEnergy)
         if (vocalEnergyHistory.size > 10) vocalEnergyHistory.poll()
@@ -471,7 +538,10 @@ class RiskDecisionEngine(private val context: Context) {
         responseLatencyHistory.add(responseLatencyMs)
         if (responseLatencyHistory.size > 10) responseLatencyHistory.poll()
 
-        Log.d(TAG, "📊 Voice: energy=$vocalEnergy, latency=${responseLatencyMs}ms, vad=$vadScore")
+        wordsPerSecondHistory.add(wordsPerSecond)
+        if (wordsPerSecondHistory.size > 10) wordsPerSecondHistory.poll()
+
+        Log.d(TAG, "📊 Voice: energy=$vocalEnergy, latency=${responseLatencyMs}ms, wps=$wordsPerSecond, vad=$vadScore")
     }
 
     fun updateDriverResponse(responseType: UserResponseType, latencyMs: Float) {
@@ -522,37 +592,19 @@ class RiskDecisionEngine(private val context: Context) {
         level: Int,
         driveMinutes: Int,
         vocalTrend: Float,
-        latencyTrend: Float
+        latencyTrend: Float,
+        baseFatigue: Float,
+        envModifier: Float,
+        agentScore: Float = 0.5f,
+        paceTrend: Float = 2.5f
     ): String {
-        val factors = mutableListOf<String>()
-
-        when (state) {
-            RiskState.STABLE -> factors.add("all signals nominal")
-            RiskState.EMERGING -> {
-                if (lastVocalEnergy < 0.75f) factors.add("vocal energy declining")
-                if (lastResponseLatencyMs > 1000f) factors.add("latency rising")
-                if (circadianWindow == CircadianWindow.CIRCADIAN_LOW) factors.add("circadian low")
-            }
-            RiskState.WINDOW -> {
-                if (lastVocalEnergy < 0.55f) factors.add("vocal energy critical")
-                if (lastResponseLatencyMs > 1800f) factors.add("latency very high")
-                factors.add("sustained fatigue")
-            }
-            RiskState.CRITICAL -> {
-                factors.add("immediate danger: ${lastVocalEnergy}")
-                if (lastUserResponse == UserResponseType.NO_RESPONSE) factors.add("no response")
-            }
-        }
-
-        factors.add("${driveMinutes}min driving")
-        if (currentRoadType == RoadType.HIGHWAY) factors.add("highway")
-
-        return factors.joinToString(", ")
+        return "Base: ${String.format("%.2f", baseFatigue)} + Env: ${String.format("%.2f", envModifier)} | Pace: ${String.format("%.1f", paceTrend)}wps | Agent: ${String.format("%.2f", agentScore)}"
     }
 
     private fun clearHistory() {
         vocalEnergyHistory.clear()
         responseLatencyHistory.clear()
+        wordsPerSecondHistory.clear()
         speedHistory.clear()
         riskStateHistory.clear()
     }

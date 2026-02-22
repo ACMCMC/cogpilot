@@ -10,7 +10,13 @@ import androidx.car.app.model.MessageTemplate
 import androidx.car.app.model.Action
 import androidx.car.app.model.CarColor
 import androidx.car.app.model.CarIcon
+import androidx.car.app.hardware.CarHardwareManager
+import androidx.car.app.hardware.info.CarInfo
+import androidx.car.app.hardware.common.CarValue
+import androidx.car.app.hardware.info.Speed
 import androidx.core.graphics.drawable.IconCompat
+import androidx.core.content.ContextCompat
+import android.util.Log
 
 /**
  * Android Auto Service for CogPilot.
@@ -28,7 +34,36 @@ class AutomotiveService : CarAppService() {
 
 class AutomotiveSession : Session() {
     override fun onCreateScreen(intent: Intent): Screen {
+        // Start monitoring car hardware when session starts
+        setupCarHardware()
         return MainCarScreen(carContext)
+    }
+
+    private fun setupCarHardware() {
+        try {
+            val carHardwareManager = carContext.getCarService(CarHardwareManager::class.java)
+            val carInfo = carHardwareManager.carInfo
+            
+            // Subscribe to speed
+            val executor = ContextCompat.getMainExecutor(carContext)
+            carInfo.addSpeedListener(executor) { speed ->
+                handleSpeedUpdate(speed)
+            }
+            Log.i("AutomotiveService", "✓ Vehicle speed listener registered")
+        } catch (e: Exception) {
+            Log.e("AutomotiveService", "Error setting up car hardware: ${e.message}")
+        }
+    }
+
+    private fun handleSpeedUpdate(speed: Speed) {
+        val rawSpeedMs = speed.rawSpeedMetersPerSecond
+        if (rawSpeedMs.status == CarValue.STATUS_SUCCESS) {
+            val speedMs = rawSpeedMs.value
+            if (speedMs != null) {
+                // Forward to RiskDecisionEngine
+                VoiceAgentService.riskEngine?.updateVehicleSpeed(speedMs)
+            }
+        }
     }
 }
 

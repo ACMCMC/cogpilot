@@ -16,6 +16,7 @@ class CogPilotMediaService : MediaBrowserService() {
     private var mediaSession: MediaSession? = null
     private var currentScore: Float = 0f
     private var currentState: RiskState = RiskState.STABLE
+    private var currentBreakdown: String = "Monitoring for your safety"
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
 
     override fun onCreate() {
@@ -35,9 +36,10 @@ class CogPilotMediaService : MediaBrowserService() {
     private fun setupRiskListener() {
         val engine = VoiceAgentService.riskEngine
         if (engine != null) {
-            engine.onRiskScoreUpdated = { score, state ->
+            engine.onRiskScoreUpdated = { score, state, breakdown ->
                 currentScore = score
                 currentState = state
+                currentBreakdown = breakdown
                 // Update Android Auto UI
                 notifyChildrenChanged("cogpilot_root")
             }
@@ -63,6 +65,18 @@ class CogPilotMediaService : MediaBrowserService() {
         // Return a single status item to prevent "No items" and confirm CogPilot is active
         val mediaItems = mutableListOf<MediaBrowser.MediaItem>()
         
+        val engine = VoiceAgentService.riskEngine
+        if (engine == null || !engine.isDriving) {
+            val description = MediaDescription.Builder()
+                .setMediaId("cogpilot_status")
+                .setTitle("Not driving")
+                .setSubtitle("CogPilot is standing by")
+                .build()
+            mediaItems.add(MediaBrowser.MediaItem(description, MediaBrowser.MediaItem.FLAG_PLAYABLE))
+            result.sendResult(mediaItems)
+            return
+        }
+        
         // Convert risk score to attention percentage (Inverse of risk)
         val attentionPercent = ((1.1f - currentScore) / 1.1f * 100).toInt().coerceIn(0, 100)
         val stateLabel = when(currentState) {
@@ -75,7 +89,7 @@ class CogPilotMediaService : MediaBrowserService() {
         val description = MediaDescription.Builder()
             .setMediaId("cogpilot_status")
             .setTitle("Attention: $attentionPercent% — $stateLabel")
-            .setSubtitle("CogPilot Monitoring Active")
+            .setSubtitle(currentBreakdown)
             .build()
             
         mediaItems.add(MediaBrowser.MediaItem(description, MediaBrowser.MediaItem.FLAG_PLAYABLE))

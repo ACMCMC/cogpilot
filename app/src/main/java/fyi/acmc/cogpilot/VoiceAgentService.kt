@@ -131,6 +131,10 @@ class VoiceAgentService : Service() {
     private var currentDriverId: String = "aldan_creo"
     private var currentInteractionType: String = VoiceAgentTrigger.INTERACTION_TYPE_CHECK_IN
 
+    // Transcript Timing State
+    private var lastAgentMessageTime: Long = 0L
+    private var userSpeechStartTime: Long = 0L
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.i(TAG, "onStartCommand: ${intent?.action}")
         intent?.getStringExtra("EXTRA_USER_ID")?.let { currentDriverId = it }
@@ -440,11 +444,14 @@ $historyContext$calendarContextStr"""
                     },
                     onMessage = { source, messageJson ->
                         Log.d(TAG, "Message from $source: ${messageJson.take(500)}")
+                        val now = System.currentTimeMillis()
+                        
                         // broadcast agent responses to UI and track for history
                         if (source == "agent") {
                             try {
                                 val msg = JSONObject(messageJson).optString("message", "")
                                 if (msg.isNotEmpty()) {
+                                    lastAgentMessageTime = now
                                     // Record agent message for interaction summary
                                     currentSessionMessages.add("Agent: $msg")
                                     
@@ -456,21 +463,43 @@ $historyContext$calendarContextStr"""
                             } catch (e: Exception) {
                                 Log.w(TAG, "Failed to parse agent message: ${e.message}")
                             }
-                        } else if (source == "driver") {
-                            // Also track driver responses
+                        } else if (source == "user" || source == "driver") {
+                            // Also track driver responses & timings (user_transcript event disguised as user message by wrapper)
                             try {
                                 val msg = JSONObject(messageJson).optString("message", "")
                                 if (msg.isNotEmpty()) {
+                                    if (userSpeechStartTime == 0L) {
+                                        userSpeechStartTime = now
+                                    }
                                     currentSessionMessages.add("Driver: $msg")
+                                    
+                                    // Calculate Latency
+                                    val latencyMs = if (lastAgentMessageTime > 0) {
+                                        (userSpeechStartTime - lastAgentMessageTime).coerceAtLeast(0L).toFloat()
+                                    } else 500f
+                                    
+                                    // Calculate Words Per Second
+                                    val words = msg.split(Regex("\\s+")).filter { it.isNotBlank() }.size
+                                    val speechDurationSeconds = (now - userSpeechStartTime).coerceAtLeast(100L) / 1000f
+                                    val wps = if (speechDurationSeconds > 0) words / speechDurationSeconds else 2.5f
+
+                                    Log.i(TAG, "⏱️ Transcript Timing -> Latency: ${latencyMs.toInt()}ms | Pace: ${String.format("%.2f", wps)} wps")
+
+                                    // Feed real telemetry to RiskEngine
+                                    _riskEngine?.updateDriverResponse(UserResponseType.COMPLIANT, latencyMs)
+                                    _riskEngine?.updateVoiceTelemetry(
+                                        vocalEnergy = 0.8f, // We'll keep this fixed or use VAD for now
+                                        responseLatencyMs = latencyMs,
+                                        vadScore = 0.8f,
+                                        wordsPerSecond = wps
+                                    )
+                                    
+                                    // Reset user speech timer for next utterance
+                                    userSpeechStartTime = 0L
                                 }
                             } catch (e: Exception) {
                                 Log.w(TAG, "Failed to parse driver message: ${e.message}")
                             }
-                        }
-                        
-                        // Update response type in RiskEngine if driver spoke
-                        if (source == "driver") {
-                            _riskEngine?.updateDriverResponse(UserResponseType.COMPLIANT, 500f)
                         }
                     },
                     onUnhandledClientToolCall = { call ->
@@ -512,6 +541,14 @@ $historyContext$calendarContextStr"""
                                 Log.i(TAG, "📢 Agent recorded sleep hours: $hours")
                                 _riskEngine?.setSleepHours(hours)
                                 return ClientToolResult.success("Sleep hours set to $hours")
+                            }
+                        },
+                        "update_agentic_attention_score" to object : ClientTool {
+                            override suspend fun execute(parameters: Map<String, Any>): ClientToolResult? {
+                                val score = (parameters["param_score"] as? Number ?: parameters["score"] as? Number)?.toFloat() ?: 0.5f
+                                Log.i(TAG, "📢 Agent assessed driver attention: $score")
+                                _riskEngine?.updateAgenticAttention(score)
+                                return ClientToolResult.success("Attention score updated to $score")
                             }
                         },
                         "search_nearby_places" to object : ClientTool {

@@ -35,6 +35,10 @@ class LocationCapture(private val context: Context) {
     private var lastMapsApiCallTimeMs = 0L
     private var lastRoadContext: RoadContext? = null
     private val MAPS_API_THROTTLE_MS = 60_000L  // 60 seconds
+    
+    // Rate limiting: Snowflake DB inserts
+    private var lastDbInsertTimeMs = 0L
+    private val DB_INSERT_THROTTLE_MS = 60_000L // 60 seconds
 
     fun startCapture(
         snowflakeManager: SnowflakeManager,
@@ -103,17 +107,23 @@ class LocationCapture(private val context: Context) {
                                 val roadType = roadCtx.types.firstOrNull()
                                 val roadTypesStr = if (roadCtx.types.isNotEmpty()) roadCtx.types.joinToString(",") else null
 
-                                it.insertTelemetry(
-                                    timestamp = now,
-                                    speed = speed,
-                                    heading = heading,
-                                    lat = location.latitude,
-                                    lon = location.longitude,
-                                    roadPlaceId = roadCtx.placeId,
-                                    roadTypes = roadTypesStr,
-                                    roadType = roadType,
-                                    trafficRatio = roadCtx.trafficRatio
-                                )
+                                // Throttle Snowflake Insert
+                                if (now - lastDbInsertTimeMs >= DB_INSERT_THROTTLE_MS) {
+                                    lastDbInsertTimeMs = now
+                                    it.insertTelemetry(
+                                        timestamp = now,
+                                        speed = speed,
+                                        heading = heading,
+                                        lat = location.latitude,
+                                        lon = location.longitude,
+                                        roadPlaceId = roadCtx.placeId,
+                                        roadTypes = roadTypesStr,
+                                        roadType = roadType,
+                                        trafficRatio = roadCtx.trafficRatio
+                                    )
+                                } else {
+                                    android.util.Log.d("LocationCapture", "❄️ Skipped Snowflake telemetry insert (throttled to 1/min)")
+                                }
 
                                 debugCallback?.invoke(speed, heading, roadCtx, location.latitude, location.longitude)
                             } catch (e: Exception) {
