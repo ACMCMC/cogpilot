@@ -47,6 +47,7 @@ class VoiceAgentService : Service() {
     private var isRunning = false
     private val snowflakeManager = SnowflakeManager()
     private val calendarContext = CalendarContextProvider(this)
+    private val spotifyManager by lazy { SpotifyManager(this) }
 
     // hold context updates until connected
     private var pendingSystemContext: String? = null
@@ -127,6 +128,10 @@ class VoiceAgentService : Service() {
                 if (events.isNotEmpty()) {
                     snowflakeManager.insertCalendarEvents(driverId = 1, events = events)
                 }
+                
+                // Fade out Spotify smoothly, then pause, before starting the agent conversation.
+                spotifyManager.fadeOutAndPause()
+
                 // Build driver context to inject at conversation start.
                 // Use a readable display name (replace underscores with spaces, title-case).
                 val displayName = currentDriverId
@@ -146,6 +151,12 @@ class VoiceAgentService : Service() {
                     appendLine("- The driver says they're fine, done, or wants to stop.")
                     appendLine("- You've completed a natural conversation arc (question → response → follow-up → wrap-up).")
                     appendLine("End gracefully with a short closing line before calling the tool, e.g. 'Drive safe, I'll check in again soon.'")
+                    appendLine()
+                    appendLine("[DYNAMIC TOOLS AVAILABLE]")
+                    appendLine("You have access to the following dynamic tools:")
+                    appendLine("1. `get_now_playing()` -> Returns the currently playing Spotify song.")
+                    appendLine("2. `play_music(query: String)` -> Plays a Spotify playlist matching the query (e.g. 'energetic', 'calm', 'focus', 'pop', 'chill').")
+                    appendLine("Use these tools as standard JSON function calls when the driver asks about music or needs a mood shift.")
                 }
                 Log.d(TAG, "Queued system context:\n$systemContext")
                 pendingSystemContext = systemContext
@@ -244,6 +255,29 @@ class VoiceAgentService : Service() {
                     },
                     // register device tools that agent can call
                     clientTools = mapOf(
+                        "get_now_playing" to object : ClientTool {
+                            override suspend fun execute(parameters: Map<String, Any>): ClientToolResult? {
+                                Log.i(TAG, "📢 Agent requested get_now_playing tool")
+                                val np = spotifyManager.getNowPlaying()
+                                return if (np.isSuccess) {
+                                    ClientToolResult.success(np.getOrNull() ?: "")
+                                } else {
+                                    ClientToolResult.success("Spotify is not available or not playing")
+                                }
+                            }
+                        },
+                        "play_music" to object : ClientTool {
+                            override suspend fun execute(parameters: Map<String, Any>): ClientToolResult? {
+                                val query = parameters["query"]?.toString() ?: "energetic"
+                                Log.i(TAG, "📢 Agent requested play_music tool with query: $query")
+                                val res = spotifyManager.play(query)
+                                return if (res.isSuccess) {
+                                    ClientToolResult.success(res.getOrNull() ?: "")
+                                } else {
+                                    ClientToolResult.success("Spotify is not available")
+                                }
+                            }
+                        },
                         // agent requests string name 'stop_conversation' to end session
                         "stop_conversation" to object : ClientTool {
                             override suspend fun execute(parameters: Map<String, Any>): ClientToolResult? {
@@ -453,6 +487,7 @@ class VoiceAgentService : Service() {
             }
         }
         serviceScope.cancel()
+        spotifyManager.disconnect()
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
     }

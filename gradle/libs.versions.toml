@@ -13,6 +13,7 @@ okhttp = "4.12.0"
 elevenlabs = "0.5.0"
 mockito = "5.11.0"
 orgJson = "20240303"
+gson = "2.10.1"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -28,6 +29,7 @@ kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-
 elevenlabs-android = { group = "io.elevenlabs", name = "elevenlabs-android", version.ref = "elevenlabs" }
 mockito-core = { group = "org.mockito", name = "mockito-core", version.ref = "mockito" }
 org-json = { group = "org.json", name = "json", version.ref = "orgJson" }
+gson = { group = "com.google.code.gson", name = "gson", version.ref = "gson" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

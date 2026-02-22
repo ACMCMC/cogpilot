@@ -53,6 +53,7 @@ android {
         buildConfigField("String", "SNOWFLAKE_ROLE", "\"${getEnvOrProperty("SNOWFLAKE_ROLE", "ACCOUNTADMIN")}\"")
         buildConfigField("String", "ELEVENLABS_API_KEY", "\"${getEnvOrProperty("ELEVENLABS_API_KEY")}\"")
         buildConfigField("String", "ELEVENLABS_AGENT_ID", "\"${getEnvOrProperty("ELEVENLABS_AGENT_ID")}\"")
+        buildConfigField("String", "SPOTIFY_CLIENT_ID", "\"${getEnvOrProperty("SPOTIFY_CLIENT_ID", "dummy")}\"")
         buildConfigField("String", "GOOGLE_MAPS_API_KEY", "\"${getEnvOrProperty("GOOGLE_MAPS_API_KEY")}\"")
     }
 
@@ -80,6 +81,8 @@ android {
 }
 
 dependencies {
+    implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar"))))
+    implementation(libs.gson)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
     implementation(libs.material)
