@@ -59,6 +59,10 @@ class SpotifyManager(private val context: Context) {
         }
     }
 
+    suspend fun authorize() {
+        connect()
+    }
+
     fun disconnect() {
         appRemote?.let { SpotifyAppRemote.disconnect(it) }
         appRemote = null

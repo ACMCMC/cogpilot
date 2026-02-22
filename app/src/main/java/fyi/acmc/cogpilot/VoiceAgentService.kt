@@ -179,18 +179,20 @@ class VoiceAgentService : Service() {
                     appendLine("Address the driver by name ($displayName) naturally but not on every turn.")
                     appendLine()
                     appendLine("[ENDING THE CONVERSATION]")
-                    appendLine("You have a tool called `end_session`. Call it when:")
+                    appendLine("You have a tool called `end_call`. Call it when:")
+                    appendLine("- The driver gives short, unengaged answers, or seems disinterested. DO NOT drag the conversation out.")
                     appendLine("- The driver has responded 2-3 times and sounds engaged and awake.")
                     appendLine("- The driver says they're fine, done, or wants to stop.")
                     appendLine("- You've completed a natural conversation arc (question → response → follow-up → wrap-up).")
-                    appendLine("End gracefully with a short closing line before calling the tool, e.g. 'Drive safe, I'll check in again soon.'")
+                    appendLine("End gracefully with a short closing line before calling the tool, e.g. 'Drive safe, I'll let you focus' or 'I'll check in again later.'")
                     appendLine()
                     appendLine("[DYNAMIC TOOLS AVAILABLE]")
                     appendLine("You have access to the following dynamic tools:")
                     appendLine("1. `get_now_playing()` -> Returns the currently playing Spotify song.")
                     appendLine("2. `play_music(query: String)` -> Plays a Spotify playlist matching the query (e.g. 'energetic', 'calm', 'focus', 'pop', 'chill').")
                     appendLine("3. `get_driving_status()` -> Returns the real-time driving speed, location address, and local traffic/speed limit info.")
-                    appendLine("Use these tools as standard JSON function calls when the driver asks about music or needs a mood shift, or asks 'where are we' or 'how fast am I going'.")
+                    appendLine("4. `find_nearby_places(query: String)` -> Searches Google Maps near the driver for the query (e.g. 'rest stops', 'cafes', 'gas stations', 'restaurants').")
+                    appendLine("Use these tools as standard JSON function calls when the driver asks about music or needs a mood shift, or asks 'where are we', 'how fast am I going', or 'find a place to stop'.")
                 }
                 Log.d(TAG, "Queued system context:\n$systemContext")
                 pendingSystemContext = systemContext
@@ -317,6 +319,22 @@ class VoiceAgentService : Service() {
                                 val statusMsg = "Driving status: The driver is currently going $speedStr in a $speedLimitStr zone with $trafficStr. The current location is $address."
                                 Log.i(TAG, "get_driving_status result: $statusMsg")
                                 return ClientToolResult.success(statusMsg)
+                            }
+                        },
+                        "find_nearby_places" to object : ClientTool {
+                            override suspend fun execute(parameters: Map<String, Any>): ClientToolResult? {
+                                val query = parameters["query"]?.toString() ?: return ClientToolResult.success("Please specify what kind of place to find, e.g. 'gas stations'.")
+                                Log.i(TAG, "📢 Agent requested find_nearby_places tool with query: $query")
+                                
+                                val lat = liveLat
+                                val lon = liveLon
+                                if (lat == null || lon == null) {
+                                    return ClientToolResult.success("Cannot search for $query: exact GPS location is currently unavailable.")
+                                }
+
+                                val mapsClient = MapsRoadsClient(this@VoiceAgentService)
+                                val result = mapsClient.findNearbyPlaces(lat.toDouble(), lon.toDouble(), query)
+                                return ClientToolResult.success(result)
                             }
                         },
                         "get_now_playing" to object : ClientTool {

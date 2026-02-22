@@ -155,6 +155,42 @@ class MapsRoadsClient(private val context: Context) {
             "Error fetching location"
         }
     }
+
+    fun findNearbyPlaces(lat: Double, lon: Double, query: String): String {
+        // Use Places Text Search which allows queries like "rest stops" or "cafes" biased to a location
+        val encodedQuery = java.net.URLEncoder.encode(query, "UTF-8")
+        val url = "https://maps.googleapis.com/maps/api/place/textsearch/json?query=$encodedQuery&location=$lat,$lon&radius=5000&key=$apiKey"
+        Log.d("MapsRoadsClient", "findNearbyPlaces request: $url")
+        return try {
+            val body = http.newCall(Request.Builder().url(url).build()).execute().body?.string() ?: return "No places found"
+            val json = JSONObject(body)
+            val results = json.optJSONArray("results")
+            
+            if (results != null && results.length() > 0) {
+                val places = mutableListOf<String>()
+                val limit = kotlin.math.min(3, results.length())
+                
+                for (i in 0 until limit) {
+                    val place = results.optJSONObject(i) ?: continue
+                    val name = place.optString("name", "Unknown Place")
+                    val rating = place.optDouble("rating", Double.NaN)
+                    val ratingStr = if (rating.isNaN()) "" else " (${rating}⭐)"
+                    val address = place.optString("formatted_address", "").substringBefore(",")
+                    
+                    val status = place.optString("business_status", "")
+                    val statusStr = if (status == "CLOSED_TEMPORARILY" || status == "CLOSED_PERMANENTLY") " [CLOSED]" else ""
+                    
+                    places.add("- $name$statusStr at $address$ratingStr")
+                }
+                "Found these nearby:\n" + places.joinToString("\n")
+            } else {
+                "No places found matching '$query' nearby."
+            }
+        } catch (e: Exception) {
+            Log.e("MapsRoadsClient", "findNearbyPlaces error", e)
+            "Error searching for places."
+        }
+    }
 }
 
 // small structs for caches
