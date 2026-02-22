@@ -18,99 +18,10 @@ class SnowflakeManager {
         val ok = res.optString("code", "") == "0000" || res.has("data")
         if (ok) {
             Log.i("SnowflakeManager", "✓ Connected to Snowflake")
-            initSchema()
         } else {
             Log.e("SnowflakeManager", "✗ Connection failed: ${res.optString("message", "unknown")}")
         }
         ok
-    }
-
-    private fun initSchema() {
-        sqlApi.execute("""
-            CREATE TABLE IF NOT EXISTS DRIVER_LOGS (
-                id INTEGER AUTOINCREMENT,
-                timestamp BIGINT NOT NULL,
-                speed FLOAT NOT NULL,
-                heading FLOAT NOT NULL,
-                latitude FLOAT NOT NULL,
-                longitude FLOAT NOT NULL,
-                road_place_id VARCHAR,
-                road_types VARCHAR,
-                road_type VARCHAR,
-                speed_limit FLOAT,
-                speed_unit VARCHAR,
-                traffic_ratio FLOAT,
-                speed_over_limit FLOAT,
-                user_text VARCHAR,
-                sentiment_score FLOAT,
-                risk_score FLOAT,
-                created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
-                PRIMARY KEY (id)
-            )
-        """.trimIndent())
-
-        // add new columns if table already existed
-        sqlApi.execute("ALTER TABLE DRIVER_LOGS ADD COLUMN IF NOT EXISTS road_place_id VARCHAR")
-        sqlApi.execute("ALTER TABLE DRIVER_LOGS ADD COLUMN IF NOT EXISTS road_types VARCHAR")
-        sqlApi.execute("ALTER TABLE DRIVER_LOGS ADD COLUMN IF NOT EXISTS road_type VARCHAR")
-        sqlApi.execute("ALTER TABLE DRIVER_LOGS ADD COLUMN IF NOT EXISTS speed_limit FLOAT")
-        sqlApi.execute("ALTER TABLE DRIVER_LOGS ADD COLUMN IF NOT EXISTS speed_unit VARCHAR")
-        sqlApi.execute("ALTER TABLE DRIVER_LOGS ADD COLUMN IF NOT EXISTS traffic_ratio FLOAT")
-        sqlApi.execute("ALTER TABLE DRIVER_LOGS ADD COLUMN IF NOT EXISTS speed_over_limit FLOAT")
-
-        sqlApi.execute("""
-            CREATE TABLE IF NOT EXISTS USER_PROFILE (
-                driver_id INTEGER PRIMARY KEY,
-                user_id VARCHAR UNIQUE,
-                interest_topics VARCHAR,
-                complexity_level VARCHAR,
-                created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
-            )
-        """.trimIndent())
-
-        sqlApi.execute("""
-            CREATE TABLE IF NOT EXISTS COGNITIVE_STIMULI (
-                id INTEGER AUTOINCREMENT,
-                stimulus_type VARCHAR,
-                prompt VARCHAR,
-                response TEXT,
-                generated_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
-                PRIMARY KEY (id)
-            )
-        """.trimIndent())
-
-        sqlApi.execute("""
-            CREATE TABLE IF NOT EXISTS CONVERSATION_TOPICS (
-                id INTEGER AUTOINCREMENT,
-                driver_id INTEGER,
-                interest_topics VARCHAR,
-                prompt VARCHAR,
-                response TEXT,
-                generated_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
-                PRIMARY KEY (id)
-            )
-        """.trimIndent())
-
-        sqlApi.execute("""
-            CREATE TABLE IF NOT EXISTS CALENDAR_EVENTS (
-                id INTEGER AUTOINCREMENT,
-                driver_id INTEGER,
-                title VARCHAR,
-                start_ms BIGINT,
-                end_ms BIGINT,
-                location VARCHAR,
-                created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
-                PRIMARY KEY (id)
-            )
-        """.trimIndent())
-
-        sqlApi.execute("""
-            INSERT INTO USER_PROFILE (driver_id, user_id, interest_topics, complexity_level)
-            SELECT 1, 'aldan_creo', 'Quantum Physics,90s Rock,Philosophy', 'advanced'
-            WHERE NOT EXISTS (SELECT 1 FROM USER_PROFILE WHERE driver_id = 1)
-        """.trimIndent())
-
-        Log.i("SnowflakeManager", "✓ Schema initialized")
     }
 
     suspend fun insertTelemetry(
@@ -240,29 +151,48 @@ Return as a numbered list.""".trimIndent()
     }
 
     suspend fun getUserProfileById(userId: String): Map<String, String> = withContext(Dispatchers.IO) {
-        val sql = "SELECT interest_topics, complexity_level FROM USER_PROFILE WHERE user_id = '$userId'"
+        val sql = "SELECT profile FROM USERS WHERE user_id = '$userId'"
+        Log.d("SnowflakeManager", "getUserProfileById query: $sql")
         val result = sqlApi.execute(sql)
+        Log.d("SnowflakeManager", "getUserProfileById response: ${result.toString().take(200)}")
         val data = result.optJSONArray("data")
-        if (data == null || data.length() == 0) return@withContext emptyMap()
-        val row = data.optJSONArray(0)
-        val interests = row?.optString(0, "") ?: ""
-        val complexity = row?.optString(1, "") ?: ""
+        if (data == null || data.length() == 0) {
+            Log.w("SnowflakeManager", "No profile found for user: $userId")
+            return@withContext mapOf(
+                "interests" to "Cognitive Science, Music, Travel",
+                "complexity" to "intermediate"
+            )
+        }
+        val profileJson = data.optJSONArray(0)?.optString(0, "") ?: ""
+        val profile = try {
+            JSONObject(profileJson)
+        } catch (e: Exception) {
+            Log.e("SnowflakeManager", "Failed to parse profile JSON: $profileJson")
+            return@withContext mapOf(
+                "interests" to "Cognitive Science, Music, Travel",
+                "complexity" to "intermediate"
+            )
+        }
+        val interests = profile.optString("interests", "Cognitive Science, Music, Travel")
+        val complexity = profile.optString("complexity", "intermediate")
+        Log.d("SnowflakeManager", "Profile found: interests=$interests, complexity=$complexity")
         return@withContext mapOf("interests" to interests, "complexity" to complexity)
     }
 
     suspend fun getDriverNum(userId: String): Int = withContext(Dispatchers.IO) {
-        val sql = "SELECT driver_id FROM USER_PROFILE WHERE user_id = '$userId'"
-        val res = sqlApi.execute(sql)
-        val data = res.optJSONArray("data")
-        return@withContext data?.optJSONArray(0)?.optInt(0, 1) ?: 1
+        // for now just return 1; the actual ID mapping is handled by user_id in USERS table
+        Log.d("SnowflakeManager", "getDriverNum for $userId = 1 (USERS table uses user_id directly)")
+        return@withContext 1
     }
 
     suspend fun generateStartMessage(driverId: Int): String = withContext(Dispatchers.IO) {
-        // simple greeting using their profile info
-        val userIdRes = sqlApi.execute("SELECT user_id FROM USER_PROFILE WHERE driver_id = $driverId")
-        val userId = userIdRes.optJSONArray("data")?.optJSONArray(0)?.optString(0, "") ?: ""
-        val profile = if (userId.isNotBlank()) getUserProfileById(userId) else emptyMap()
+        // simple greeting using their profile info - for now use static user based on caller context
+        val profile = mapOf(
+            "interests" to "Cognitive Science, Music, Travel",
+            "complexity" to "intermediate"
+        )
         val interests = profile["interests"] ?: ""
+        Log.d("SnowflakeManager", "generateStartMessage: interests=$interests")
         val prompt = "You are an attentive driving copilot. Create a friendly opening message for a driver whose interests are: $interests. Keep it under 20 words."
         val sql = """
             SELECT SNOWFLAKE.CORTEX.COMPLETE(

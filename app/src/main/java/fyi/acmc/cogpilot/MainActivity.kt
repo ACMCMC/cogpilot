@@ -42,6 +42,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var uiManager: UIManager
     
     private var voiceStatusReceiver: android.content.BroadcastReceiver? = null
+    private var aiLogReceiver: android.content.BroadcastReceiver? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -84,6 +85,16 @@ class MainActivity : AppCompatActivity() {
                 uiManager.setConnectionStatus("✗ Connection Failed", "#FF6B6B")
             }
         }
+
+        // register AI log receiver
+        aiLogReceiver = object : android.content.BroadcastReceiver() {
+            override fun onReceive(context: android.content.Context, intent: android.content.Intent) {
+                val msg = intent.getStringExtra("ai_msg") ?: return
+                uiManager.logAiInput(msg)
+            }
+        }
+        val filter = android.content.IntentFilter("fyi.acmc.cogpilot.voice.AI_LOG")
+        registerReceiver(aiLogReceiver, filter, android.content.Context.RECEIVER_EXPORTED)
     }
 
     override fun onStart() {
@@ -211,7 +222,7 @@ class MainActivity : AppCompatActivity() {
                         Log.e("CogPilot", "Risk update: ${e.message}", e)
                     }
                 }
-                handler.postDelayed(this, 3000)
+                handler.postDelayed(this, 1500)
             }
         })
     }
@@ -286,6 +297,9 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         Log.i("CogPilot", "Shutting down...")
+        if (aiLogReceiver != null) {
+            unregisterReceiver(aiLogReceiver)
+        }
         locationCapture.stopCapture()
         snowflakeManager.close()
         handler.removeCallbacksAndMessages(null)
@@ -335,6 +349,8 @@ class UIManager(
     private lateinit var interventionText: TextView
     private lateinit var metricsText: TextView
     private lateinit var debugText: TextView
+    private lateinit var aiLogText: TextView
+    private val aiInputHistory = mutableListOf<String>()
 
 
 
@@ -370,6 +386,8 @@ class UIManager(
         container.addView(createMetricsRow())
         container.addView(createSpacerView(20))
         container.addView(createDebugCard())
+        container.addView(createSpacerView(12))
+        container.addView(createAiLogCard())
         container.addView(createSpacerView(20))
         container.addView(createInterventionCard())
         container.addView(createSpacerView(20))
@@ -746,6 +764,12 @@ class UIManager(
         debugText.text = msg
     }
 
+    fun logAiInput(msg: String) {
+        aiInputHistory.add(msg)
+        if (aiInputHistory.size > 5) aiInputHistory.removeAt(0)
+        aiLogText.text = aiInputHistory.joinToString("\n\n") { "• $it" }
+    }
+
     fun updateDebug(
         speed: Float,
         heading: Float,
@@ -760,18 +784,21 @@ class UIManager(
         val speedLimit = roadCtx.speedLimitMph?.let { "%.1f mph".format(it) } ?: "-"
         val traffic = roadCtx.trafficRatio?.let { "%.2f".format(it) } ?: "-"
         
-        debugText.text = """
-speed: %.1f mph | heading: %.0f°
+        debugText.text = """speed: %.1f mph | heading: %.0f°
 location: %.5f, %.5f
 risk: %.2f | voice: %s
 road place_id: %s
 road types: %s
-speed limit: %s | traffic: %s
-""".trimIndent().format(
+speed limit: %s | traffic: %s""".trimIndent().format(
             speed,
             heading,
             lat,
             lon,
+            riskScore,
+            if (voiceActive) "active" else "idle",
+            placeId,
+            types,
+            speedLimit,
             traffic
         )
     }
@@ -793,6 +820,36 @@ speed limit: %s | traffic: %s
             text = "✓ Safe"
             setTextColor(android.graphics.Color.parseColor("#4CAF50"))
         }
+    }
+
+    private fun createAiLogCard(): com.google.android.material.card.MaterialCardView {
+        val card = createCard(android.graphics.Color.parseColor("#0B0F14"), 10f, "#FF6B35")
+        val content = android.widget.LinearLayout(activity).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(20, 20, 20, 20)
+        }
+
+        val label = TextView(activity).apply {
+            text = "Model Inputs (Last 5)"
+            textSize = 12f
+            setTextColor(android.graphics.Color.parseColor("#FF6B35"))
+            typeface = Typeface.SANS_SERIF
+            setPadding(0, 0, 0, 12)
+        }
+
+        aiLogText = TextView(activity).apply {
+            text = "awaiting AI..."
+            textSize = 11f
+            setTextColor(android.graphics.Color.parseColor("#FFB3A1"))
+            typeface = Typeface.SANS_SERIF
+            isScrollContainer = true
+            setLineSpacing(0f, 1.5f)
+        }
+
+        content.addView(label)
+        content.addView(aiLogText)
+        card.addView(content)
+        return card
     }
 
     private fun animateProgress(target: Int) {

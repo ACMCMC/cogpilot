@@ -36,6 +36,8 @@ class VoiceAgentService : Service() {
         const val ACTION_STOP = "fyi.acmc.cogpilot.voice.STOP"
         const val ACTION_STATUS_CHANGE = "fyi.acmc.cogpilot.voice.STATUS_CHANGE"
         const val EXTRA_STATUS = "status"
+        const val ACTION_AI_LOG = "fyi.acmc.cogpilot.voice.AI_LOG"
+        const val EXTRA_AI_MSG = "ai_msg"
     }
 
     private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
@@ -97,16 +99,15 @@ class VoiceAgentService : Service() {
         serviceScope.launch {
             try {
                 // gather context before starting the conversation
-                val driverNum = snowflakeManager.getDriverNum(currentDriverId)
-                val startMsg = snowflakeManager.generateStartMessage(driverNum)
-                val topics = snowflakeManager.generateConversationTopics(driverId = driverNum)
+                val startMsg = snowflakeManager.generateStartMessage(1)
+                val topics = snowflakeManager.generateConversationTopics(driverId = 1)
                 val profile = snowflakeManager.getUserProfileById(currentDriverId)
                 val events = calendarContext.getUpcomingEvents(limit = 5, windowMinutes = 240)
                 if (events.isNotEmpty()) {
-                    snowflakeManager.insertCalendarEvents(driverId = driverNum, events = events)
+                    snowflakeManager.insertCalendarEvents(driverId = 1, events = events)
                 }
                 // prepare plain-text profile description for AI
-                val profText = "Driver profile: interests = ${profile["interests"]}; complexity = ${profile["complexity"]}."
+                val profText = "You are speaking with $currentDriverId. Profile: interests = ${profile["interests"]}; complexity = ${profile["complexity"]}."
                 Log.d(TAG, "Profile text: $profText")
                 sendUpdate(profText)
                 // also log/start message
@@ -279,6 +280,11 @@ class VoiceAgentService : Service() {
     private fun sendUpdate(text:String) {
         Log.d(TAG, "model input: $text")
         session?.sendContextualUpdate(text)
+        // broadcast to UI to show in AI log
+        val intent = Intent(ACTION_AI_LOG).apply {
+            putExtra(EXTRA_AI_MSG, text)
+        }
+        sendBroadcast(intent)
     }
 
     private fun createNotificationChannel() {

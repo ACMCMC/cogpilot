@@ -54,8 +54,11 @@ class LocationCapture(private val context: Context) {
             return
         }
 
+        android.util.Log.i("LocationCapture", "✓ Permissions granted, starting GPS listener")
+
         locationListener = object : LocationListener {
             override fun onLocationChanged(location: Location) {
+                android.util.Log.d("LocationCapture", "✓ Location update: ${location.latitude}, ${location.longitude}")
                 val speed = location.speed * 2.237f  // Convert m/s to mph
                 val heading = calculateHeading(lastLocation, location)
                 lastLocation = location
@@ -63,9 +66,11 @@ class LocationCapture(private val context: Context) {
                 // Insert into Snowflake directly
                 snowflakeManager?.let {
                     (context as? androidx.appcompat.app.AppCompatActivity)?.lifecycleScope?.launch {
+                        android.util.Log.d("LocationCapture", "Fetching road context for ${location.latitude}, ${location.longitude}")
                         val roadCtx = withContext(Dispatchers.IO) {
                             mapsClient.getRoadContext(location.latitude, location.longitude)
                         }
+                        android.util.Log.d("LocationCapture", "Road context: placeId=${roadCtx.placeId}, types=${roadCtx.types}")
                         val roadType = roadCtx.types.firstOrNull()
                         val roadTypesStr = if (roadCtx.types.isNotEmpty()) roadCtx.types.joinToString(",") else null
                         val speedOver = roadCtx.speedLimitMph?.let { limit -> speed - limit }
@@ -103,15 +108,16 @@ class LocationCapture(private val context: Context) {
             override fun onStatusChanged(provider: String, status: Int, extras: Bundle) {}
         }
 
-        // Request location updates every 5 seconds (5000 ms) or 10 meters
+        // Request location updates every 2 seconds (2000 ms) or 10 meters
         try {
             locationManager.requestLocationUpdates(
                 LocationManager.GPS_PROVIDER,
-                5000L,  // 5 seconds
+                2000L,  // 2 seconds
                 10f,    // 10 meters minimum distance
                 locationListener!!,
                 Looper.getMainLooper()
             )
+            android.util.Log.i("LocationCapture", "✓ Location updates requested")
         } catch (e: Exception) {
             android.util.Log.e("LocationCapture", "Error requesting location updates", e)
         }
