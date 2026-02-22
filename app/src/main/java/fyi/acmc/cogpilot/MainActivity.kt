@@ -325,6 +325,13 @@ class MainActivity : AppCompatActivity() {
                             lat = lat,
                             lon = lon
                         )
+                        // Broadcast live telemetry to VoiceAgentService so the agent can request it anytime
+                        sendBroadcast(Intent("fyi.acmc.cogpilot.voice.LOCATION_UPDATE").apply {
+                            putExtra("extra_speed_mph", speed)
+                            putExtra("extra_lat", lat.toFloat())
+                            putExtra("extra_lon", lon.toFloat())
+                            setPackage(packageName)
+                        })
                     }
                 )
             } catch (e: Exception) {

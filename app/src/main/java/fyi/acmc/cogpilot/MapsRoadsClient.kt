@@ -19,6 +19,7 @@ class MapsRoadsClient(private val context: Context) {
 
     private val cellCache = mutableMapOf<String, RoadContext>()
     private val placeTypeCache = mutableMapOf<String, PlaceTypeCache>()
+    private val reverseGeocodeCache = mutableMapOf<String, GeocodeCache>()
 
     fun getRoadContext(lat: Double, lon: Double): RoadContext {
         val now = System.currentTimeMillis()
@@ -127,6 +128,33 @@ class MapsRoadsClient(private val context: Context) {
         val rLon = round(lon * 1000.0) / 1000.0
         return "$rLat,$rLon"
     }
+
+    fun reverseGeocode(lat: Double, lon: Double): String {
+        val now = System.currentTimeMillis()
+        val cellKey = gridKey(lat, lon)
+        val cached = reverseGeocodeCache[cellKey]
+        if (cached != null && now - cached.fetchedAtMs < 300_000) {
+            return cached.address
+        }
+
+        val url = "https://maps.googleapis.com/maps/api/geocode/json?latlng=$lat,$lon&key=$apiKey"
+        Log.d("MapsRoadsClient", "reverseGeocode request: $url")
+        return try {
+            val body = http.newCall(Request.Builder().url(url).build()).execute().body?.string() ?: return "Unknown Location"
+            val json = JSONObject(body)
+            val results = json.optJSONArray("results")
+            if (results != null && results.length() > 0) {
+                val address = results.optJSONObject(0)?.optString("formatted_address", "Unknown Location") ?: "Unknown Location"
+                reverseGeocodeCache[cellKey] = GeocodeCache(address, now)
+                address
+            } else {
+                "Unknown Location"
+            }
+        } catch (e: Exception) {
+            Log.e("MapsRoadsClient", "reverseGeocode error", e)
+            "Error fetching location"
+        }
+    }
 }
 
 // small structs for caches
@@ -147,5 +175,10 @@ data class SpeedLimitInfo(
 
 data class PlaceTypeCache(
     val types: List<String>,
+    val fetchedAtMs: Long
+)
+
+data class GeocodeCache(
+    val address: String,
     val fetchedAtMs: Long
 )

@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.os.Binder
 import android.os.IBinder
@@ -55,12 +56,28 @@ class VoiceAgentService : Service() {
     private var pendingTopics: String? = null
     private var pendingEventSummary: String? = null
 
+    private var liveSpeedMph: Float? = null
+    private var liveLat: Float? = null
+    private var liveLon: Float? = null
+
+    private val locationReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action == "fyi.acmc.cogpilot.voice.LOCATION_UPDATE") {
+                liveSpeedMph = intent.getFloatExtra("extra_speed_mph", -1f).takeIf { it >= 0 }
+                liveLat = intent.getFloatExtra("extra_lat", 0f).takeIf { it != 0f }
+                liveLon = intent.getFloatExtra("extra_lon", 0f).takeIf { it != 0f }
+            }
+        }
+    }
+
     inner class VoiceAgentBinder : Binder() {
         fun getService(): VoiceAgentService = this@VoiceAgentService
     }
 
     override fun onCreate() {
         super.onCreate()
+        val filter = android.content.IntentFilter("fyi.acmc.cogpilot.voice.LOCATION_UPDATE")
+        ContextCompat.registerReceiver(this, locationReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
         Log.i(TAG, "✓ Service created")
     }
 
@@ -156,7 +173,8 @@ class VoiceAgentService : Service() {
                     appendLine("You have access to the following dynamic tools:")
                     appendLine("1. `get_now_playing()` -> Returns the currently playing Spotify song.")
                     appendLine("2. `play_music(query: String)` -> Plays a Spotify playlist matching the query (e.g. 'energetic', 'calm', 'focus', 'pop', 'chill').")
-                    appendLine("Use these tools as standard JSON function calls when the driver asks about music or needs a mood shift.")
+                    appendLine("3. `get_driving_status()` -> Returns the real-time driving speed, location address, and local traffic/speed limit info.")
+                    appendLine("Use these tools as standard JSON function calls when the driver asks about music or needs a mood shift, or asks 'where are we' or 'how fast am I going'.")
                 }
                 Log.d(TAG, "Queued system context:\n$systemContext")
                 pendingSystemContext = systemContext
@@ -255,6 +273,33 @@ class VoiceAgentService : Service() {
                     },
                     // register device tools that agent can call
                     clientTools = mapOf(
+                        "get_driving_status" to object : ClientTool {
+                            override suspend fun execute(parameters: Map<String, Any>): ClientToolResult? {
+                                Log.i(TAG, "📢 Agent requested get_driving_status tool")
+                                val speedStr = liveSpeedMph?.let { "${it.toInt()} mph" } ?: "unknown speed"
+                                
+                                val lat = liveLat
+                                val lon = liveLon
+                                if (lat == null || lon == null) {
+                                    return ClientToolResult.success("Driving status: Speed is $speedStr, but exact GPS location is currently unavailable.")
+                                }
+
+                                val mapsClient = MapsRoadsClient(this@VoiceAgentService)
+                                val roadCtx = mapsClient.getRoadContext(lat.toDouble(), lon.toDouble())
+                                val address = mapsClient.reverseGeocode(lat.toDouble(), lon.toDouble())
+
+                                val speedLimitStr = roadCtx.speedLimitMph?.let { "speed limit is ${it.toInt()} mph" } ?: "speed limit unknown"
+                                val trafficStr = roadCtx.trafficRatio?.let { ratio ->
+                                    if (ratio > 1.2f) "heavy traffic"
+                                    else if (ratio > 1.05f) "moderate traffic"
+                                    else "light traffic"
+                                } ?: "unknown traffic conditions"
+                                
+                                val statusMsg = "Driving status: The driver is currently going $speedStr in a $speedLimitStr zone with $trafficStr. The current location is $address."
+                                Log.i(TAG, "get_driving_status result: $statusMsg")
+                                return ClientToolResult.success(statusMsg)
+                            }
+                        },
                         "get_now_playing" to object : ClientTool {
                             override suspend fun execute(parameters: Map<String, Any>): ClientToolResult? {
                                 Log.i(TAG, "📢 Agent requested get_now_playing tool")
@@ -492,6 +537,10 @@ class VoiceAgentService : Service() {
 
     override fun onDestroy() {
         Log.i(TAG, "Service destroyed")
+        try {
+            unregisterReceiver(locationReceiver)
+        } catch (e: Exception) {}
+        
         serviceScope.launch {
             try {
                 session?.endSession()
