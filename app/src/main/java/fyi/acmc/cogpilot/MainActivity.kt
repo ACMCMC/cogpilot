@@ -46,6 +46,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Log.i("CogPilot", "MainActivity.onCreate")
         
         // suppress noisy third-party library logs
         java.util.logging.Logger.getLogger("net.snowflake").level = java.util.logging.Level.WARNING
@@ -191,6 +192,7 @@ class MainActivity : AppCompatActivity() {
                 lifecycleScope.launch {
                     try {
                         val logs = snowflakeManager.getLastNLogs(24)
+                        Log.d("CogPilot", "Risk update: fetched ${logs.size} telemetry rows")
                         
                         if (logs.isNotEmpty()) {
                             val riskData = riskScorer.calculateRisk(logs)
@@ -251,6 +253,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        Log.d("CogPilot", "onRequestPermissionsResult: requestCode=$requestCode, grantResults=${grantResults.contentToString()}")
         if (requestCode == 100) {
             val allGranted = grantResults.all { it == android.content.pm.PackageManager.PERMISSION_GRANTED }
             if (allGranted) {
@@ -268,23 +271,28 @@ class MainActivity : AppCompatActivity() {
     private fun onPermissionsGranted() {
         Log.i("CogPilot", "Starting location capture with permissions...")
         lifecycleScope.launch {
-            locationCapture.startCapture(
-                snowflakeManager,
-                callback = { speed, heading ->
-                    uiManager.updateMetrics(speed, heading)
-                },
-                debug = { speed, heading, roadCtx, lat, lon ->
-                    uiManager.updateDebug(
-                        speed = speed,
-                        heading = heading,
-                        riskScore = lastRiskScore,
-                        voiceActive = voiceActive,
-                        roadCtx = roadCtx,
-                        lat = lat,
-                        lon = lon
-                    )
-                }
-            )
+            Log.d("CogPilot", "Permission scope launched, about to call startCapture()")
+            try {
+                locationCapture.startCapture(
+                    snowflakeManager,
+                    callback = { speed, heading ->
+                        uiManager.updateMetrics(speed, heading)
+                    },
+                    debug = { speed, heading, roadCtx, lat, lon ->
+                        uiManager.updateDebug(
+                            speed = speed,
+                            heading = heading,
+                            riskScore = lastRiskScore,
+                            voiceActive = voiceActive,
+                            roadCtx = roadCtx,
+                            lat = lat,
+                            lon = lon
+                        )
+                    }
+                )
+            } catch (e: Exception) {
+                Log.e("CogPilot", "Exception in startCapture: ${e.message}", e)
+            }
         }
     }
 

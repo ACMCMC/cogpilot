@@ -23,6 +23,7 @@ class SnowflakeSqlApiClient {
     fun execute(statement: String): JSONObject {
         return try {
             val url = "https://$host/api/v2/statements"
+            Log.d("SnowflakeSqlApi", "Connecting to: host=$host, db=$database, schema=$schema, warehouse=$warehouse")
 
             val body = JSONObject()
             body.put("statement", statement)
@@ -30,6 +31,8 @@ class SnowflakeSqlApiClient {
             body.put("database", database)
             body.put("schema", schema)
             body.put("role", role)
+
+            Log.d("SnowflakeSqlApi", "Execute SQL: ${statement.take(80)}... with db=$database schema=$schema")
 
             val request = Request.Builder()
                 .url(url)

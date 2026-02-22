@@ -58,53 +58,61 @@ class LocationCapture(private val context: Context) {
 
         locationListener = object : LocationListener {
             override fun onLocationChanged(location: Location) {
-                android.util.Log.d("LocationCapture", "✓ Location update: ${location.latitude}, ${location.longitude}")
-                val speed = location.speed * 2.237f  // Convert m/s to mph
-                val heading = calculateHeading(lastLocation, location)
-                lastLocation = location
+                try {
+                    android.util.Log.d("LocationCapture", "✓ Location update: ${location.latitude}, ${location.longitude}")
+                    val speed = location.speed * 2.237f  // Convert m/s to mph
+                    val heading = calculateHeading(lastLocation, location)
+                    lastLocation = location
 
-                // Insert into Snowflake directly
-                snowflakeManager?.let {
-                    (context as? androidx.appcompat.app.AppCompatActivity)?.lifecycleScope?.launch {
-                        android.util.Log.d("LocationCapture", "Fetching road context for ${location.latitude}, ${location.longitude}")
-                        val roadCtx = withContext(Dispatchers.IO) {
-                            mapsClient.getRoadContext(location.latitude, location.longitude)
+                    // Insert into Snowflake directly
+                    snowflakeManager?.let {
+                        (context as? androidx.appcompat.app.AppCompatActivity)?.lifecycleScope?.launch {
+                            try {
+                                android.util.Log.d("LocationCapture", "Fetching road context for ${location.latitude}, ${location.longitude}")
+                                val roadCtx = withContext(Dispatchers.IO) {
+                                    mapsClient.getRoadContext(location.latitude, location.longitude)
+                                }
+                                android.util.Log.d("LocationCapture", "Road context: placeId=${roadCtx.placeId}, types=${roadCtx.types}")
+                                val roadType = roadCtx.types.firstOrNull()
+                                val roadTypesStr = if (roadCtx.types.isNotEmpty()) roadCtx.types.joinToString(",") else null
+                                val speedOver = roadCtx.speedLimitMph?.let { limit -> speed - limit }
+
+                                it.insertTelemetry(
+                                    timestamp = System.currentTimeMillis(),
+                                    speed = speed,
+                                    heading = heading,
+                                    lat = location.latitude,
+                                    lon = location.longitude,
+                                    roadPlaceId = roadCtx.placeId,
+                                    roadTypes = roadTypesStr,
+                                    roadType = roadType,
+                                    speedLimit = roadCtx.speedLimitMph,
+                                    speedUnit = roadCtx.speedUnit,
+                                    trafficRatio = roadCtx.trafficRatio,
+                                    speedOverLimit = speedOver
+                                )
+
+                                debugCallback?.invoke(speed, heading, roadCtx, location.latitude, location.longitude)
+                            } catch (e: Exception) {
+                                android.util.Log.e("LocationCapture", "Error in location processing: ${e.message}", e)
+                            }
                         }
-                        android.util.Log.d("LocationCapture", "Road context: placeId=${roadCtx.placeId}, types=${roadCtx.types}")
-                        val roadType = roadCtx.types.firstOrNull()
-                        val roadTypesStr = if (roadCtx.types.isNotEmpty()) roadCtx.types.joinToString(",") else null
-                        val speedOver = roadCtx.speedLimitMph?.let { limit -> speed - limit }
-
-                        it.insertTelemetry(
-                            timestamp = System.currentTimeMillis(),
-                            speed = speed,
-                            heading = heading,
-                            lat = location.latitude,
-                            lon = location.longitude,
-                            roadPlaceId = roadCtx.placeId,
-                            roadTypes = roadTypesStr,
-                            roadType = roadType,
-                            speedLimit = roadCtx.speedLimitMph,
-                            speedUnit = roadCtx.speedUnit,
-                            trafficRatio = roadCtx.trafficRatio,
-                            speedOverLimit = speedOver
-                        )
-
-                        debugCallback?.invoke(speed, heading, roadCtx, location.latitude, location.longitude)
                     }
+
+                    // Update UI callback
+                    captureCallback?.invoke(speed, heading)
+                } catch (e: Exception) {
+                    android.util.Log.e("LocationCapture", "Exception in onLocationChanged: ${e.message}", e)
                 }
 
-                // Update UI callback
-                captureCallback?.invoke(speed, heading)
 
-                android.util.Log.d(
-                    "LocationCapture",
-                    "Speed: $speed mph, Heading: $heading°, Lat: ${location.latitude}, Lon: ${location.longitude}"
-                )
+            override fun onProviderEnabled(provider: String) {
+                android.util.Log.d("LocationCapture", "Provider enabled: $provider")
+            }
+            override fun onProviderDisabled(provider: String) {
+                android.util.Log.w("LocationCapture", "Provider disabled: $provider")
             }
 
-            override fun onProviderEnabled(provider: String) {}
-            override fun onProviderDisabled(provider: String) {}
             override fun onStatusChanged(provider: String, status: Int, extras: Bundle) {}
         }
 
@@ -117,9 +125,9 @@ class LocationCapture(private val context: Context) {
                 locationListener!!,
                 Looper.getMainLooper()
             )
-            android.util.Log.i("LocationCapture", "✓ Location updates requested")
+            android.util.Log.i("LocationCapture", "✓ Location updates requested on GPS_PROVIDER")
         } catch (e: Exception) {
-            android.util.Log.e("LocationCapture", "Error requesting location updates", e)
+            android.util.Log.e("LocationCapture", "Error requesting location updates: ${e.message}", e)
         }
     }
 

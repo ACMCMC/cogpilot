@@ -14,6 +14,8 @@ class SnowflakeManager {
     private val sqlApi = SnowflakeSqlApiClient()
 
     suspend fun initConnection(): Boolean = withContext(Dispatchers.IO) {
+        Log.i("SnowflakeManager", "Initializing Snowflake connection...")
+        Log.d("SnowflakeManager", "BuildConfig: DB=${BuildConfig.SNOWFLAKE_DATABASE}, Schema=${BuildConfig.SNOWFLAKE_SCHEMA}, Account=${BuildConfig.SNOWFLAKE_ACCOUNT}")
         val res = sqlApi.execute("SELECT 1")
         val ok = res.optString("code", "") == "0000" || res.has("data")
         if (ok) {
@@ -44,15 +46,11 @@ class SnowflakeManager {
             fun sqlNum(value: Float?): String = value?.let { it.toString() } ?: "NULL"
 
             val sql = """
-                INSERT INTO DRIVER_LOGS (
-                    timestamp, speed, heading, latitude, longitude,
-                    road_place_id, road_types, road_type,
-                    speed_limit, speed_unit, traffic_ratio, speed_over_limit
+                INSERT INTO COGPILOT.PUBLIC.TELEMETRY (
+                    user_id, trip_id, timestamp_ms, speed_mph, heading_degrees, latitude, longitude
                 )
                 VALUES (
-                    $timestamp, $speed, $heading, $lat, $lon,
-                    ${sqlStr(roadPlaceId)}, ${sqlStr(roadTypes)}, ${sqlStr(roadType)},
-                    ${sqlNum(speedLimit)}, ${sqlStr(speedUnit)}, ${sqlNum(trafficRatio)}, ${sqlNum(speedOverLimit)}
+                    'driver', 'trip_1', $timestamp, $speed, $heading, $lat, $lon
                 )
             """.trimIndent()
             sqlApi.execute(sql)
@@ -61,7 +59,17 @@ class SnowflakeManager {
     }
 
     suspend fun getLastNLogs(n: Int = 24): List<FloatArray> = withContext(Dispatchers.IO) {
-        return@withContext sqlApi.querySpeedHeading(n)
+        val sql = "SELECT speed_mph, heading_degrees FROM COGPILOT.PUBLIC.TELEMETRY ORDER BY timestamp_ms DESC LIMIT $n"
+        val result = sqlApi.execute(sql)
+        val data = result.optJSONArray("data") ?: return@withContext emptyList()
+        val out = mutableListOf<FloatArray>()
+        for (i in 0 until data.length()) {
+            val row = data.optJSONArray(i) ?: continue
+            val speed = row.optDouble(0, 0.0).toFloat()
+            val heading = row.optDouble(1, 0.0).toFloat()
+            out.add(floatArrayOf(speed, heading))
+        }
+        return@withContext out.reversed()
     }
 
     suspend fun getSentiment(text: String): Float = withContext(Dispatchers.IO) {
@@ -93,8 +101,8 @@ Generate a SHORT, PROVOCATIVE question under 20 words."""
         Log.i("SnowflakeManager", "✓ Arctic generated: ${response.take(80)}")
 
         val insert = """
-            INSERT INTO COGNITIVE_STIMULI (stimulus_type, prompt, response)
-            VALUES ('debate', '${prompt.replace("'", "''").take(200)}', '${response.replace("'", "''")}')
+            INSERT INTO COGPILOT.PUBLIC.INTERACTIONS (user_id, interaction_type, content, response)
+            VALUES ('driver', 'stimulus', '${prompt.replace("'", "''").take(200)}', '${response.replace("'", "''")}')
         """.trimIndent()
         sqlApi.execute(insert)
 
@@ -120,8 +128,8 @@ Return as a numbered list.""".trimIndent()
         val response = data?.optJSONArray(0)?.optString(0, "") ?: ""
 
         val insert = """
-            INSERT INTO CONVERSATION_TOPICS (driver_id, interest_topics, prompt, response)
-            VALUES ($driverId, '${interests.replace("'", "''")}', '${prompt.replace("'", "''").take(250)}', '${response.replace("'", "''")}')
+            INSERT INTO COGPILOT.PUBLIC.INTERACTIONS (user_id, interaction_type, content, response)
+            VALUES ('driver', 'topic', '${prompt.replace("'", "''").take(250)}', '${response.replace("'", "''")}')
         """.trimIndent()
         sqlApi.execute(insert)
 
@@ -129,32 +137,39 @@ Return as a numbered list.""".trimIndent()
     }
 
     suspend fun insertCalendarEvents(driverId: Int, events: List<CalendarEvent>) = withContext(Dispatchers.IO) {
-        if (events.isEmpty()) return@withContext
-        val values = events.joinToString(",") { ev ->
-            val title = ev.title.replace("'", "''")
-            val loc = ev.location?.replace("'", "''")
-            "($driverId, '$title', ${ev.startMs}, ${ev.endMs}, ${if (loc == null) "NULL" else "'$loc'"})"
-        }
-        val sql = """
-            INSERT INTO CALENDAR_EVENTS (driver_id, title, start_ms, end_ms, location)
-            VALUES $values
-        """.trimIndent()
-        sqlApi.execute(sql)
+        // Calendar events table not in schema; skip insert for now
+        Log.d("SnowflakeManager", "Calendar events: ${events.size} events (not inserted to DB)")
     }
 
     private fun getInterestTopics(driverId: Int): String {
-        val sql = "SELECT interest_topics FROM USER_PROFILE WHERE driver_id = $driverId"
+        val sql = "SELECT profile FROM COGPILOT.PUBLIC.USERS LIMIT 1"
         val result = sqlApi.execute(sql)
         val data = result.optJSONArray("data")
-        val interests = data?.optJSONArray(0)?.optString(0, "")
-        return if (interests.isNullOrBlank()) "Cognitive Science, Music, Travel" else interests
+        val profileJson = data?.optJSONArray(0)?.optString(0, "{}")
+        return try {
+            val profile = JSONObject(profileJson)
+            profile.optString("interests", "Cognitive Science, Music, Travel")
+        } catch (e: Exception) {
+            "Cognitive Science, Music, Travel"
+        }
     }
 
     suspend fun getUserProfileById(userId: String): Map<String, String> = withContext(Dispatchers.IO) {
-        val sql = "SELECT profile FROM USERS WHERE user_id = '$userId'"
+        val sql = "SELECT profile FROM COGPILOT.PUBLIC.COGPILOT.PUBLIC.USERS WHERE user_id = '$userId'"
         Log.d("SnowflakeManager", "getUserProfileById query: $sql")
         val result = sqlApi.execute(sql)
         Log.d("SnowflakeManager", "getUserProfileById response: ${result.toString().take(200)}")
+        
+        // check for table not found error
+        val errorCode = result.optString("code", "")
+        if (errorCode.contains("002003") || result.optString("message", "").contains("does not exist")) {
+            Log.e("SnowflakeManager", "USERS table does not exist. Run populate_snowflake.py first.")
+            return@withContext mapOf(
+                "interests" to "Cognitive Science, Music, Travel",
+                "complexity" to "intermediate"
+            )
+        }
+        
         val data = result.optJSONArray("data")
         if (data == null || data.length() == 0) {
             Log.w("SnowflakeManager", "No profile found for user: $userId")
