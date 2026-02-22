@@ -61,6 +61,7 @@ class SnowflakeManager {
         sqlApi.execute("""
             CREATE TABLE IF NOT EXISTS USER_PROFILE (
                 driver_id INTEGER PRIMARY KEY,
+                user_id VARCHAR UNIQUE,
                 interest_topics VARCHAR,
                 complexity_level VARCHAR,
                 created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
@@ -104,8 +105,8 @@ class SnowflakeManager {
         """.trimIndent())
 
         sqlApi.execute("""
-            INSERT INTO USER_PROFILE (driver_id, interest_topics, complexity_level)
-            SELECT 1, 'Quantum Physics,90s Rock,Philosophy', 'advanced'
+            INSERT INTO USER_PROFILE (driver_id, user_id, interest_topics, complexity_level)
+            SELECT 1, 'aldan_creo', 'Quantum Physics,90s Rock,Philosophy', 'advanced'
             WHERE NOT EXISTS (SELECT 1 FROM USER_PROFILE WHERE driver_id = 1)
         """.trimIndent())
 
@@ -236,6 +237,24 @@ Return as a numbered list.""".trimIndent()
         val data = result.optJSONArray("data")
         val interests = data?.optJSONArray(0)?.optString(0, "")
         return if (interests.isNullOrBlank()) "Cognitive Science, Music, Travel" else interests
+    }
+
+    suspend fun getUserProfileById(userId: String): Map<String, String> = withContext(Dispatchers.IO) {
+        val sql = "SELECT interest_topics, complexity_level FROM USER_PROFILE WHERE user_id = '$userId'"
+        val result = sqlApi.execute(sql)
+        val data = result.optJSONArray("data")
+        if (data == null || data.length() == 0) return@withContext emptyMap()
+        val row = data.optJSONArray(0)
+        val interests = row?.optString(0, "") ?: ""
+        val complexity = row?.optString(1, "") ?: ""
+        return@withContext mapOf("interests" to interests, "complexity" to complexity)
+    }
+
+    suspend fun getDriverNum(userId: String): Int = withContext(Dispatchers.IO) {
+        val sql = "SELECT driver_id FROM USER_PROFILE WHERE user_id = '$userId'"
+        val res = sqlApi.execute(sql)
+        val data = res.optJSONArray("data")
+        return@withContext data?.optJSONArray(0)?.optInt(0, 1) ?: 1
     }
 
     fun close() {

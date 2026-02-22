@@ -59,6 +59,8 @@ class MainActivity : AppCompatActivity() {
             { newId: String ->
                 currentUserId = newId
                 Log.i("CogPilot","Switched profile to $newId")
+                // refresh profile info display
+                refreshProfileDisplay()
             },
             { onVoiceToggle() }
         )
@@ -73,6 +75,8 @@ class MainActivity : AppCompatActivity() {
             if (connected) {
                 Log.i("CogPilot", "✓ Snowflake Connected")
                 uiManager.setConnectionStatus("✓ Connected", "#4CAF50")
+                // display initial profile
+                refreshProfileDisplay()
                 // location capture starts after permissions are confirmed
                 updateRiskPeriodically()
             } else {
@@ -286,6 +290,23 @@ class MainActivity : AppCompatActivity() {
         // voice service manages itself; just ensure it's stopped
         if (voiceActive) {
             VoiceAgentTrigger.stop(this)
+        }
+    }
+
+    // helper to map string id to numeric key used in Snowflake
+    private suspend fun driverNum(id: String): Int {
+        return snowflakeManager.getDriverNum(id)
+    }
+
+    // update profile text in UI
+    private fun refreshProfileDisplay() {
+        lifecycleScope.launch {
+            val prof = snowflakeManager.getUserProfileById(currentUserId)
+            val text = "User: $currentUserId\n" +
+                    "Interests: ${prof["interests"]}\n" +
+                    "Complexity: ${prof["complexity"]}"
+            uiManager.updateProfile(text)
+            uiManager.updateDebugMessage("profile loaded for $currentUserId")
         }
     }
 }
@@ -712,6 +733,15 @@ class UIManager(
         metricsText.text = "Monotony: %.2f\nTime: %.2f\nComplexity: %.2f".format(
             risk.monotony, risk.timeOnTask, risk.complexity
         )
+    }
+
+    fun updateProfile(info: String) {
+        // display somewhere: reuse statusSubtitle for simplicity
+        statusSubtitle.text = info
+    }
+
+    fun updateDebugMessage(msg: String) {
+        debugText.text = msg
     }
 
     fun updateDebug(
