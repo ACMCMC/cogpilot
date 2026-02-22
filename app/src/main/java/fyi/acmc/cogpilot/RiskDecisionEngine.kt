@@ -45,6 +45,7 @@ class RiskDecisionEngine(private val context: Context) {
     private val riskStateHistory = ConcurrentLinkedQueue<RiskState>()  // last 5 decisions
     private var cumulativeDriveMinutes: Int = 0 // Persistent across trips in same session
     private var lastDecisionTime: Long = 0L
+    private var lastInteractionTime: Long = 0L
 
     // Current session data
     private var lastLocation: Location? = null
@@ -64,6 +65,7 @@ class RiskDecisionEngine(private val context: Context) {
     // Circadian state
     private var circadianWindow: CircadianWindow = CircadianWindow.NORMAL
     private var sleepHoursToday: Int = 7
+    private var ambientTemperatureF: Float = 60.0f
 
     // Callbacks
     var onRiskStateChanged: ((RiskState, Int, String) -> Unit)? = null  // state, level, reason
@@ -92,11 +94,22 @@ class RiskDecisionEngine(private val context: Context) {
         clearHistory()
         currentRiskState = RiskState.STABLE
         currentInteractionLevel = 0
+        lastInteractionTime = 0L
+    }
+
+    fun recordInteraction() {
+        lastInteractionTime = System.currentTimeMillis()
+        Log.i(TAG, "🕒 Interaction recorded. Suppression active (60s recovery).")
     }
 
     fun setSleepHours(hours: Int) {
         Log.i(TAG, "💤 Sleep hours updated to $hours")
         sleepHoursToday = hours
+    }
+
+    fun updateTemperature(tempF: Float) {
+        Log.d(TAG, "🌡️ Temperature updated: $tempF°F")
+        ambientTemperatureF = tempF
     }
 
     fun getLastLocation(): Location? = lastLocation
@@ -209,8 +222,16 @@ class RiskDecisionEngine(private val context: Context) {
         circadianWindow = calculateCircadianWindow()
         val envModifier = calculateThresholdModifier(sessionMinutes)
 
+        // Calculate interaction suppression factor S(t)
+        val secondsSinceLastInteraction = (now - lastInteractionTime) / 1000f
+        val suppressionFactor = if (lastInteractionTime == 0L) 1.0f 
+                                else Math.min(1.0f, (Math.log(1.0 + secondsSinceLastInteraction) / Math.log(61.0)).toFloat())
+
         // Apply thresholds to determine risk state
         val newRiskState = when {
+            // If suppression is very high (just interacted), force STABLE unless CRITICAL
+            suppressionFactor < 0.1f -> RiskState.STABLE
+
             // CRITICAL: immediate danger signals - reduced tolerance if modifier is high
             lastVocalEnergy < (0.35f - (envModifier * 0.1f)) || 
             lastResponseLatencyMs > (3000f - (envModifier * 500f)) || 
@@ -230,7 +251,13 @@ class RiskDecisionEngine(private val context: Context) {
              lastResponseLatencyMs > (1000f - (envModifier * 200f)) ||
              (sessionMinutes > 45 && circadianWindow == CircadianWindow.CIRCADIAN_LOW) ||
              isRiskTriggerActive()) -> {
-                RiskState.EMERGING
+                
+                // Final check: is the risk suppressed by recent interaction?
+                if (suppressionFactor < 0.95f) {
+                    RiskState.STABLE // Supress emerging triggers until fully recovered
+                } else {
+                    RiskState.EMERGING
+                }
             }
 
             // STABLE: all signals nominal
@@ -319,16 +346,33 @@ class RiskDecisionEngine(private val context: Context) {
             TrafficCondition.LIGHT -> modifier += 0f
         }
 
-        // 4. Road Complexity (Environment Weight)
+        // 4. Road Complexity & Speed (Environment Weight)
         // Highway driving is more monotonous than mixed or urban roads
+        // Sustained high speeds (65-75mph) on highways increase monotony
+        val currentSpeedMph = speedHistory.toList().lastOrNull() ?: 0f
         when (currentRoadType) {
-            RoadType.HIGHWAY -> modifier += 0.07f
+            RoadType.HIGHWAY -> {
+                modifier += 0.07f
+                if (currentSpeedMph in 65f..75f) {
+                    modifier += 0.05f // High speed monotony multiplier
+                }
+            }
             RoadType.SUBURBAN -> modifier += 0.02f
             RoadType.URBAN -> modifier -= 0.05f // Cities keep people alert
             RoadType.MIXED -> modifier += 0f
         }
 
-        // 5. Sleep Debt (Baseline Weight)
+        // 5. Temperature (Fatigue Weight)
+        // Assume baseline 60°F. Deviations into heat or cold increase fatigue.
+        val tempDeviation = Math.abs(ambientTemperatureF - 60.0f)
+        if (tempDeviation > 20f) { // Above 80°F or below 40°F
+            modifier += 0.06f
+        }
+        if (tempDeviation > 35f) { // Above 95°F or below 25°F
+            modifier += 0.12f
+        }
+
+        // 6. Sleep Debt (Baseline Weight)
         if (sleepHoursToday < 6) modifier += 0.05f
         if (sleepHoursToday < 5) modifier += 0.12f
         if (sleepHoursToday < 4) modifier += 0.25f

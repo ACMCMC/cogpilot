@@ -156,6 +156,9 @@ class VoiceAgentService : Service() {
         interactionEnded = false  // Reset for new interaction
         currentSessionMessages.clear()  // Reset messages for this session
 
+        // Record interaction to trigger suppression logic in RiskEngine
+        _riskEngine?.recordInteraction()
+
         // Start RiskDecisionEngine trip
         _riskEngine?.startTrip(currentDriverId, 7) // Hardcoded 7h sleep for now
 
