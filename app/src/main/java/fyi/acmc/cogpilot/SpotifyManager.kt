@@ -15,6 +15,7 @@ class SpotifyManager(private val context: Context) {
     private val redirectUri = "fyi.acmc.cogpilot://spotify-callback"
 
     @Volatile private var appRemote: SpotifyAppRemote? = null
+    var wasPlayingBeforeVoice: Boolean = false
 
     private val PLAYLISTS = mapOf(
         "energetic"  to "spotify:playlist:37i9dQZF1DXdPec7aLTmlC",
@@ -63,7 +64,7 @@ class SpotifyManager(private val context: Context) {
         appRemote = null
     }
 
-    suspend fun fadeOutAndPause(durationMs: Long = 2000L) {
+    suspend fun fadeOutAndPause(durationMs: Long = 5000L) {
         val remote = connect() ?: return
         
         val isPlaying = suspendCancellableCoroutine<Boolean> { cont ->
@@ -77,6 +78,7 @@ class SpotifyManager(private val context: Context) {
                 }
         }
         
+        wasPlayingBeforeVoice = isPlaying
         if (!isPlaying) return
 
         val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
@@ -103,6 +105,15 @@ class SpotifyManager(private val context: Context) {
             // Restore volume immediately after pause
             audioManager.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, originalVolume, 0)
         }
+    }
+
+    suspend fun resumeIfNeeded() {
+        if (!wasPlayingBeforeVoice) return
+        val remote = connect() ?: return
+        
+        Log.i(TAG, "🎵 Resuming Spotify playback...")
+        remote.playerApi.resume()
+        wasPlayingBeforeVoice = false
     }
 
     suspend fun getNowPlaying(): Result<String> {

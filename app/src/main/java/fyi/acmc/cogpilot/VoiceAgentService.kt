@@ -257,6 +257,9 @@ class VoiceAgentService : Service() {
 
                         if (statusStr.contains("disconnected")) {
                             isRunning = false
+                            serviceScope.launch {
+                                spotifyManager.resumeIfNeeded()
+                            }
                             stopSelf()
                         }
                     },
