@@ -460,7 +460,7 @@ $historyContext$calendarContext"""
                         },
                         "set_sleep_hours" to object : ClientTool {
                             override suspend fun execute(parameters: Map<String, Any>): ClientToolResult? {
-                                val hours = (parameters["hours"] as? Number)?.toInt() ?: 7
+                                val hours = (parameters["param_hours"] as? Number ?: parameters["hours"] as? Number)?.toInt() ?: 7
                                 Log.i(TAG, "📢 Agent recorded sleep hours: $hours")
                                 _riskEngine?.setSleepHours(hours)
                                 return ClientToolResult.success("Sleep hours set to $hours")
@@ -468,7 +468,7 @@ $historyContext$calendarContext"""
                         },
                         "search_nearby_places" to object : ClientTool {
                             override suspend fun execute(parameters: Map<String, Any>): ClientToolResult? {
-                                val query = parameters["query"] as? String ?: "rest area"
+                                val query = parameters["param_query"] as? String ?: parameters["query"] as? String ?: "rest area"
                                 Log.i(TAG, "📢 Agent requested nearby places: $query")
                                 
                                 // Mock response for places search
