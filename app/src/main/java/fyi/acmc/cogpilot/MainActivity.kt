@@ -307,15 +307,21 @@ class UIManager(private val activity: AppCompatActivity) {
 
         val container = android.widget.LinearLayout(activity).apply {
             orientation = android.widget.LinearLayout.VERTICAL
-            setPadding(16, 16, 16, 16)
+            setPadding(20, 24, 20, 32)
         }
 
         container.addView(createHeaderView())
+        container.addView(createSpacerView(16))
         container.addView(createStatusCard())
+        container.addView(createSpacerView(20))
         container.addView(createVoiceControlCard())
+        container.addView(createSpacerView(20))
         container.addView(createRiskGauge())
+        container.addView(createSpacerView(12))
         container.addView(createMetricsRow())
+        container.addView(createSpacerView(20))
         container.addView(createInterventionCard())
+        container.addView(createSpacerView(20))
         container.addView(createDetailsCard())
 
         scroll.addView(container)
@@ -325,21 +331,22 @@ class UIManager(private val activity: AppCompatActivity) {
     private fun createHeaderView(): android.widget.LinearLayout {
         val header = android.widget.LinearLayout(activity).apply {
             orientation = android.widget.LinearLayout.VERTICAL
-            setPadding(6, 20, 6, 16)
+            setPadding(8, 16, 8, 20)
         }
 
         val title = TextView(activity).apply {
             text = "CogPilot"
-            textSize = 34f
+            textSize = 36f
             setTextColor(android.graphics.Color.parseColor("#C200D6"))
             typeface = Typeface.SANS_SERIF
+            setPadding(0, 0, 0, 8)
         }
 
         val subtitle = TextView(activity).apply {
             text = "Attention companion, parked UI"
             textSize = 12f
             setTextColor(android.graphics.Color.parseColor("#8EA3B5"))
-            setPadding(0, 6, 0, 0)
+            setPadding(0, 8, 0, 16)
             typeface = Typeface.SANS_SERIF
         }
 
@@ -356,21 +363,22 @@ class UIManager(private val activity: AppCompatActivity) {
 
         val content = android.widget.LinearLayout(activity).apply {
             orientation = android.widget.LinearLayout.VERTICAL
-            setPadding(22, 20, 22, 20)
+            setPadding(24, 24, 24, 24)
         }
 
         statusTitle = TextView(activity).apply {
             text = "Initializing..."
-            textSize = 24f
+            textSize = 26f
             setTextColor(android.graphics.Color.parseColor("#00FFFF"))
             typeface = Typeface.SANS_SERIF
+            setPadding(0, 0, 0, 12)
         }
 
         statusSubtitle = TextView(activity).apply {
             text = "Connecting..."
             textSize = 13f
             setTextColor(android.graphics.Color.parseColor("#00B8CC"))
-            setPadding(0, 8, 0, 0)
+            setPadding(0, 0, 0, 0)
             typeface = Typeface.SANS_SERIF
         }
 
@@ -384,7 +392,7 @@ class UIManager(private val activity: AppCompatActivity) {
         val card = createCard(android.graphics.Color.parseColor("#0B0F14"), 14f, "#5A00FF")
         val content = android.widget.LinearLayout(activity).apply {
             orientation = android.widget.LinearLayout.VERTICAL
-            setPadding(18, 14, 18, 14)
+            setPadding(24, 20, 24, 20)
         }
 
         val label = TextView(activity).apply {
@@ -392,12 +400,17 @@ class UIManager(private val activity: AppCompatActivity) {
             textSize = 12f
             setTextColor(android.graphics.Color.parseColor("#00B8CC"))
             typeface = Typeface.SANS_SERIF
+            setPadding(0, 0, 0, 12)
         }
 
         voiceButton = MaterialButton(activity).apply {
             text = "Start conversation"
             isAllCaps = false
-            setPadding(18, 10, 18, 10)
+            setPadding(20, 14, 20, 14)
+            layoutParams = android.widget.LinearLayout.LayoutParams(
+                android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = 8; bottomMargin = 12 }
             setOnClickListener {
                 onVoiceToggle?.invoke()
             }
@@ -407,7 +420,7 @@ class UIManager(private val activity: AppCompatActivity) {
             text = "Low latency: WebRTC, Scribe v2"
             textSize = 11f
             setTextColor(android.graphics.Color.parseColor("#8EA3B5"))
-            setPadding(0, 8, 0, 0)
+            setPadding(0, 0, 0, 0)
             typeface = Typeface.SANS_SERIF
         }
 
@@ -421,7 +434,7 @@ class UIManager(private val activity: AppCompatActivity) {
     private fun createRiskGauge(): android.widget.LinearLayout {
         val container = android.widget.LinearLayout(activity).apply {
             orientation = android.widget.LinearLayout.VERTICAL
-            setPadding(0, 10, 0, 16)
+            setPadding(8, 0, 8, 0)
         }
 
         val label = TextView(activity).apply {
@@ -429,24 +442,25 @@ class UIManager(private val activity: AppCompatActivity) {
             textSize = 14f
             setTextColor(android.graphics.Color.parseColor("#00B8CC"))
             typeface = Typeface.SANS_SERIF
+            setPadding(0, 0, 0, 12)
         }
 
         riskGauge = android.widget.ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal).apply {
             layoutParams = android.widget.LinearLayout.LayoutParams(
                 android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
-                28
-            ).apply { topMargin = 10 }
+                32
+            ).apply { topMargin = 8; bottomMargin = 14 }
             progress = 0
             max = 100
         }
 
         riskText = TextView(activity).apply {
             text = "0.00 / 1.00 - SAFE"
-            textSize = 16f
+            textSize = 18f
             setTextColor(android.graphics.Color.parseColor("#00FFFF"))
             typeface = Typeface.SANS_SERIF
             gravity = android.view.Gravity.CENTER
-            setPadding(0, 12, 0, 0)
+            setPadding(0, 0, 0, 0)
         }
 
         container.addView(label)
@@ -459,7 +473,7 @@ class UIManager(private val activity: AppCompatActivity) {
         val row = android.widget.LinearLayout(activity).apply {
             orientation = android.widget.LinearLayout.HORIZONTAL
             weightSum = 2f
-            setPadding(0, 10, 0, 8)
+            setPadding(8, 0, 8, 0)
         }
 
         row.addView(createMetricCard("Speed", "0.0 mph", "#00ACC1"))
@@ -470,27 +484,28 @@ class UIManager(private val activity: AppCompatActivity) {
     private fun createMetricCard(title: String, value: String, color: String): com.google.android.material.card.MaterialCardView {
         val card = createCard(android.graphics.Color.parseColor("#0B0F14"), 8f, "#007ACC")
         card.layoutParams = android.widget.LinearLayout.LayoutParams(0, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-            marginStart = 8
-            marginEnd = 8
+            marginStart = 10
+            marginEnd = 10
         }
 
         val content = android.widget.LinearLayout(activity).apply {
             orientation = android.widget.LinearLayout.VERTICAL
-            setPadding(16, 16, 16, 16)
+            setPadding(18, 20, 18, 20)
         }
 
         val valueText = TextView(activity).apply {
             text = value
-            textSize = 20f
+            textSize = 22f
             setTextColor(android.graphics.Color.parseColor(color))
             typeface = Typeface.SANS_SERIF
+            setPadding(0, 0, 0, 10)
         }
 
         val label = TextView(activity).apply {
             text = title
             textSize = 12f
             setTextColor(android.graphics.Color.parseColor("#8EA3B5"))
-            setPadding(0, 8, 0, 0)
+            setPadding(0, 0, 0, 0)
             typeface = Typeface.SANS_SERIF
         }
 
@@ -512,10 +527,11 @@ class UIManager(private val activity: AppCompatActivity) {
 
         interventionText = TextView(activity).apply {
             text = ""
-            textSize = 16f
+            textSize = 18f
             setTextColor(android.graphics.Color.parseColor("#FF00FF"))
-            setPadding(20, 20, 20, 20)
+            setPadding(24, 28, 24, 28)
             typeface = Typeface.SANS_SERIF
+            setLineSpacing(0f, 1.4f)
         }
 
         interventionCard.addView(interventionText)
@@ -526,7 +542,7 @@ class UIManager(private val activity: AppCompatActivity) {
         val card = createCard(android.graphics.Color.parseColor("#0B0F14"), 14f, "#003CFF")
         val content = android.widget.LinearLayout(activity).apply {
             orientation = android.widget.LinearLayout.VERTICAL
-            setPadding(18, 18, 18, 18)
+            setPadding(24, 24, 24, 24)
         }
 
         metricsText = TextView(activity).apply {
@@ -534,11 +550,21 @@ class UIManager(private val activity: AppCompatActivity) {
             textSize = 14f
             setTextColor(android.graphics.Color.parseColor("#8EA3B5"))
             typeface = Typeface.SANS_SERIF
+            setLineSpacing(0f, 1.6f)
         }
 
         content.addView(metricsText)
         card.addView(content)
         return card
+    }
+
+    private fun createSpacerView(heightDp: Int): android.view.View {
+        return android.view.View(activity).apply {
+            layoutParams = android.widget.LinearLayout.LayoutParams(
+                android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+                heightDp
+            )
+        }
     }
 
     private fun createCard(bgColor: Int, elevation: Float, strokeColor: String? = null): com.google.android.material.card.MaterialCardView {
