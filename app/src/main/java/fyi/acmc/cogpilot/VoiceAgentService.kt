@@ -220,10 +220,15 @@ $historyContext$calendarContextStr"""
                     }
                 }
                 
+                val roadType = _riskEngine?.getRoadType() ?: RoadType.MIXED
+                val traffic = _riskEngine?.getTrafficCondition() ?: TrafficCondition.MODERATE
+                val driverName = profileDetails["name"] ?: profile["name"] ?: currentDriverId
+
                 val systemContext = """
-                    |YOU ARE: The cognitive co-pilot for $currentDriverId.
+                    |YOU ARE: The cognitive co-pilot for $driverName.
                     |
                     |DRIVER PROFILE:
+                    |- Name: $driverName
                     |- Interests: ${profile["interests"]}
                     |- Complexity Level: ${profile["complexity"]}
                     |- Last trip memory: ${if (lastTripSummary.isNotBlank()) lastTripSummary else "No previous trip data available."}
@@ -232,20 +237,26 @@ $historyContext$calendarContextStr"""
                     |- Rejection pattern: ${profileDetails["rejection_pattern"] ?: "None"}
                     |- Communication boundary: ${profileDetails["boundary"] ?: "None"}
                     |
+                    |CURRENT DRIVING CONTEXT:
+                    |- Road Type: $roadType
+                    |- Traffic Condition: $traffic
+                    |- Destination Context: ${if (calendarContextStr.isNotBlank()) "Heading towards calendar events" else "General drive"}
+                    |
                     |CURRENT TELEMETRY (TRENDS):
                     |- Vocal Energy: ${String.format("%.2f", info?.vocalEnergyTrend ?: 0.8f)} (Baseline: 0.8)
                     |- Response Latency: ${info?.latencyTrend ?: 500}ms (Delayed if > 1200ms)
                     |- Driving Time: ${info?.driveMinutes ?: 0} min
                     |
-                    |MISSION: Monitor driver drowsiness and intervene with cognitive stimuli before they fall asleep.
+                    |MISSION: Monitor $driverName's drowsiness and intervene with cognitive stimuli before they fall asleep. 
+                    |Your presence is essential for their safety on this $roadType drive.
                     |
                     |INTERACTION LEVELS (MANDATORY CONSTRAINTS):
                     |Level 0: ACTIVE SILENCE. Do not speak unless spoken to.
-                    |Level 1: CHECK-IN. Binary (Yes/No) questions only. Example: "Are you holding up okay?"
+                    |Level 1: CHECK-IN. Binary (Yes/No) questions only. Example: "Are you holding up okay, $driverName?"
                     |Level 2: MICRO-ACTIVATION. Short, low-effort cognitive tasks. 
                     |   - counting (1-5), environmental checks ("color of car ahead"), or deep breathing.
                     |Level 3: PERSUASIVE ARGUMENT. Use data to suggest a break. Use the "Effective persuasion levers" above.
-                    |Level 4: SAFETY COMMAND. Direct, firm commands. "Miguel, pull over. Exit in 2km."
+                    |Level 4: SAFETY COMMAND. Direct, firm commands. "$driverName, pull over. Exit in 2km."
                     |
                     |Vocal Rules:
                     |- Use only the next single response.
@@ -254,7 +265,7 @@ $historyContext$calendarContextStr"""
                     |
                     |$interactionTypeContext
                     |
-                    |Tone Rules: Conversational, professional, and safety-focused.
+                    |Tone Rules: Conversational, professional, and safety-focused. Always address the driver as $driverName.
                 """.trimMargin()
                 
                 Log.d(TAG, "System context: $systemContext")
@@ -266,10 +277,7 @@ $historyContext$calendarContextStr"""
                 Log.i(TAG, "🎵 Fading out Spotify music (2000ms)...")
                 spotifyManager.fadeOutAndPause(durationMs = 2000L)
                 
-                // 3. Wait for fade to complete before playing chime
-                kotlinx.coroutines.delay(2200L) // 2s fade + 0.2s buffer
-                
-                // 4. Play intro chime
+                // 3. Play intro chime immediately after fadeOutAndPause returns (it handles its own settling)
                 Log.i(TAG, "🔔 Music paused, now playing intro chime...")
                 try {
                     playIntroChime()

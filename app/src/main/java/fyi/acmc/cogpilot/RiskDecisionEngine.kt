@@ -100,6 +100,8 @@ class RiskDecisionEngine(private val context: Context) {
     }
 
     fun getLastLocation(): Location? = lastLocation
+    fun getRoadType(): RoadType = currentRoadType
+    fun getTrafficCondition(): TrafficCondition = trafficCondition
 
     // ========================================================================
     // SNOWFLAKE: Load driver profile + memory
@@ -434,6 +436,7 @@ class RiskDecisionEngine(private val context: Context) {
     fun getDriverProfileDetails(): Map<String, String> {
         val profile = driverProfile ?: return emptyMap()
         return mapOf(
+            "name" to (profile.name),
             "triggers" to profile.riskTriggers.joinToString(", "),
             "levers" to profile.effectiveLevers.joinToString(", "),
             "boundary" to profile.boundary,

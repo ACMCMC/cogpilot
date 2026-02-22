@@ -188,8 +188,9 @@ Return as a numbered list.""".trimIndent()
         }
         val interests = profile.optString("interests", "Cognitive Science, Music, Travel")
         val complexity = profile.optString("complexity", "intermediate")
-        Log.d("SnowflakeManager", "Profile found: interests=$interests, complexity=$complexity")
-        return@withContext mapOf("interests" to interests, "complexity" to complexity)
+        val name = profile.optString("name", userId)
+        Log.d("SnowflakeManager", "Profile found: name=$name, interests=$interests, complexity=$complexity")
+        return@withContext mapOf("interests" to interests, "complexity" to complexity, "name" to name)
     }
 
     suspend fun getDriverNum(userId: String): Int = withContext(Dispatchers.IO) {

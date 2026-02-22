@@ -68,7 +68,11 @@ class SpotifyManager(private val context: Context) {
                 kotlinx.coroutines.delay(stepDuration)
             }
             sendMediaKeyEvent(KeyEvent.KEYCODE_MEDIA_PAUSE)
-            Log.i(TAG, "🎵 Music paused via media control")
+            Log.i(TAG, "🎵 Music paused via media control, waiting for stream to settle...")
+            
+            // Safety delay: ensure music is actually paused before restoring volume
+            kotlinx.coroutines.delay(500L) 
+            Log.i(TAG, "🎵 Stream settled, restoring original volume")
         } finally {
             // Restore volume immediately after pause
             audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, originalVolume, 0)
