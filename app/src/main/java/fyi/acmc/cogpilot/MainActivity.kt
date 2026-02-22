@@ -9,6 +9,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.widget.LinearLayout
 import android.widget.TextView
 import com.google.android.material.button.MaterialButton
 import androidx.appcompat.app.AppCompatActivity
@@ -34,8 +35,9 @@ class MainActivity : AppCompatActivity() {
     private val riskScorer = RiskScorer()
     private val handler = Handler(Looper.getMainLooper())
     private var isDrivingMode = false
+    private var isMoving = false  // Speed-based driving state (10+ mph)
     private var voiceActive = false
-    private var lastAutoTriggerTime = 0L
+    private var lastVoiceSessionEndTime = 0L
     private var lastRiskScore = 0f
     private var currentUserId: String = "aldan_creo"
     private var sustainedSpeedStartTime = 0L
@@ -50,6 +52,7 @@ class MainActivity : AppCompatActivity() {
     
     private var voiceStatusReceiver: android.content.BroadcastReceiver? = null
     private var aiLogReceiver: android.content.BroadcastReceiver? = null
+    private var indicatorsReceiver: android.content.BroadcastReceiver? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -143,10 +146,12 @@ class MainActivity : AppCompatActivity() {
                             }
                             "disconnected" -> {
                                 voiceActive = false
+                                lastVoiceSessionEndTime = System.currentTimeMillis()
                                 uiManager.setVoiceState(false)
                             }
                             "error" -> {
                                 voiceActive = false
+                                lastVoiceSessionEndTime = System.currentTimeMillis()
                                 uiManager.setVoiceState(false)
                             }
                         }
@@ -161,13 +166,50 @@ class MainActivity : AppCompatActivity() {
                 androidx.core.content.ContextCompat.RECEIVER_EXPORTED
             )
         }
+        
+        // Register indicators receiver
+        if (indicatorsReceiver == null) {
+            indicatorsReceiver = object : android.content.BroadcastReceiver() {
+                override fun onReceive(context: Context?, intent: android.content.Intent?) {
+                    if (intent?.action == VoiceAgentService.ACTION_INDICATORS_UPDATE) {
+                        val attention = intent.getFloatExtra(VoiceAgentService.EXTRA_ATTENTION_SCORE, 0.5f)
+                        val vad = intent.getFloatExtra(VoiceAgentService.EXTRA_VAD_SCORE, 0f)
+                        val mode = intent.getStringExtra(VoiceAgentService.EXTRA_MODE) ?: "idle"
+                        val risk = intent.getStringExtra(VoiceAgentService.EXTRA_RISK_STATE) ?: "normal"
+                        val level = intent.getIntExtra(VoiceAgentService.EXTRA_INTERACTION_LEVEL, 0)
+                        val driveMinutes = intent.getIntExtra(VoiceAgentService.EXTRA_DRIVE_MINUTES, 0)
+                        val vocalEnergy = intent.getFloatExtra(VoiceAgentService.EXTRA_VOCAL_ENERGY, 0f)
+                        val latency = intent.getFloatExtra(VoiceAgentService.EXTRA_RESPONSE_LATENCY, 0f)
+                        val roadType = intent.getStringExtra(VoiceAgentService.EXTRA_ROAD_TYPE) ?: "mixed"
+                        val circadian = intent.getStringExtra(VoiceAgentService.EXTRA_CIRCADIAN_WINDOW) ?: "normal"
+                        val profile = intent.getStringExtra(VoiceAgentService.EXTRA_DRIVER_PROFILE) ?: "unknown"
+                        val vocalTrend = intent.getFloatExtra(VoiceAgentService.EXTRA_VOCAL_ENERGY_TREND, 0f)
+                        val latencyTrend = intent.getFloatExtra(VoiceAgentService.EXTRA_LATENCY_TREND, 0f)
+                        val speedVar = intent.getFloatExtra(VoiceAgentService.EXTRA_SPEED_VARIANCE, 0f)
+                        
+                        uiManager.updateIndicators(
+                            attention, vad, mode, risk, level,
+                            driveMinutes, vocalEnergy, latency, roadType, circadian, profile,
+                            vocalTrend, latencyTrend, speedVar
+                        )
+                    }
+                }
+            }
+            val filter = android.content.IntentFilter(VoiceAgentService.ACTION_INDICATORS_UPDATE)
+            androidx.core.content.ContextCompat.registerReceiver(
+                this,
+                indicatorsReceiver,
+                filter,
+                androidx.core.content.ContextCompat.RECEIVER_EXPORTED
+            )
+        }
     }
 
     override fun onStop() {
         super.onStop()
         VoiceSessionController.onTrigger = null
         
-        // Unregister the broadcast receiver
+        // Unregister the broadcast receivers
         if (voiceStatusReceiver != null) {
             try {
                 unregisterReceiver(voiceStatusReceiver)
@@ -175,6 +217,15 @@ class MainActivity : AppCompatActivity() {
                 Log.e("CogPilot", "Error unregistering receiver: ${e.message}")
             }
             voiceStatusReceiver = null
+        }
+        
+        if (indicatorsReceiver != null) {
+            try {
+                unregisterReceiver(indicatorsReceiver)
+            } catch (e: Exception) {
+                Log.e("CogPilot", "Error unregistering indicators receiver: ${e.message}")
+            }
+            indicatorsReceiver = null
         }
     }
 
@@ -239,7 +290,6 @@ class MainActivity : AppCompatActivity() {
                 Log.i("CogPilot", "🚗 Switched to driving mode, proactively starting drive sequence.")
                 if (!voiceActive) {
                     val now = System.currentTimeMillis()
-                    lastAutoTriggerTime = now
                     val rc = lastRoadContext
                     val activeSpeedMph = carSpeedMph ?: lastSpeedMph
                     VoiceAgentTrigger.start(
@@ -287,7 +337,7 @@ class MainActivity : AppCompatActivity() {
                                 uiManager.hideIntervention()
                             } else {
                                 val now = System.currentTimeMillis()
-                                if (!voiceActive && now - lastAutoTriggerTime > 30000) {
+                                if (!voiceActive && now - lastVoiceSessionEndTime > 30000) {
                                     val rc = lastRoadContext
                                     val timeOfDay = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
                                     val driveMins = ((now - tripStartMs) / 60000).toInt()
@@ -303,7 +353,6 @@ class MainActivity : AppCompatActivity() {
                                     
                                     if (triggerSource != null) {
                                         Log.i("CogPilot", "📢 Auto-triggering voice agent - trigger=$triggerSource (risk: ${riskData.riskScore})")
-                                        lastAutoTriggerTime = now
                                         val activeSpeedMph = carSpeedMph ?: lastSpeedMph
                                         VoiceAgentTrigger.start(
                                             this@MainActivity,
@@ -394,6 +443,14 @@ class MainActivity : AppCompatActivity() {
                             lat = lat,
                             lon = lon
                         )
+                        // Update driving state immediately based on speed
+                        val wasMoving = isMoving
+                        isMoving = speed > 10f
+                        if (wasMoving != isMoving) {
+                            Log.i("CogPilot", if (isMoving) "🚗 DRIVING (speed > 10mph)" else "🛑 PARKED (speed < 10mph)")
+                            uiManager.updateDrivingState(isMoving)
+                        }
+                        
                         // Movement-based failsafe: Start drive if moving > 10mph for 5 seconds
                         val now = System.currentTimeMillis()
                         if (!voiceActive && speed > 10f && !isDrivingMode) {
@@ -479,6 +536,8 @@ class UIManager(
     private lateinit var statusSubtitle: TextView
     private var speedText: TextView? = null
     private var headingText: TextView? = null
+    private var indicatorsPanel: IndicatorsPanel? = null
+    private var drivingModePill: android.widget.LinearLayout? = null
     private lateinit var riskGauge: android.widget.ProgressBar
     private lateinit var riskText: TextView
     private lateinit var voiceButton: MaterialButton
@@ -522,6 +581,12 @@ class UIManager(
         container.addView(createSpacerView(12))
         container.addView(createMetricsRow())
         container.addView(createSpacerView(20))
+        
+        // Add live indicators panel
+        indicatorsPanel = IndicatorsPanel(activity)
+        container.addView(indicatorsPanel)
+        container.addView(createSpacerView(20))
+        
         container.addView(createDebugCard())
         container.addView(createSpacerView(12))
         container.addView(createAiLogCard())
@@ -549,14 +614,16 @@ class UIManager(
         }
 
         val subtitle = TextView(activity).apply {
-            text = "Attention companion, parked UI"
+            text = "KSS companion, parked UI"
             textSize = 12f
             setTextColor(android.graphics.Color.parseColor("#8EA3B5"))
             setPadding(0, 8, 0, 16)
             typeface = Typeface.SANS_SERIF
         }
+        statusSubtitle = subtitle
 
         val pill = createPill("PARKED MODE", "#002D72", "#00FFFF")
+        drivingModePill = pill
 
         header.addView(title)
         header.addView(subtitle)
@@ -679,7 +746,7 @@ class UIManager(
         }
 
         val label = TextView(activity).apply {
-            text = "Attention meter"
+            text = "KSS meter"
             textSize = 14f
             setTextColor(android.graphics.Color.parseColor("#00B8CC"))
             typeface = Typeface.SANS_SERIF
@@ -887,18 +954,94 @@ class UIManager(
         headingText?.text = "%.0f°".format(heading)
     }
 
+    fun updateDrivingState(isMoving: Boolean) {
+        statusSubtitle.text = if (isMoving) "Active Drive" else "Parked"
+        
+        // Update pill display
+        if (isMoving) {
+            drivingModePill?.apply {
+                removeAllViews()
+                addView(createPillContent("🚗 ON ROAD", "#003D00", "#00FF00"))
+            }
+        } else {
+            drivingModePill?.apply {
+                removeAllViews()
+                addView(createPillContent("🛑 PARKED", "#002D72", "#00FFFF"))
+            }
+        }
+    }
+    
+    private fun createPillContent(text: String, bg: String, fg: String): android.view.View {
+        val pill = android.widget.LinearLayout(activity).apply {
+            orientation = android.widget.LinearLayout.HORIZONTAL
+            layoutParams = android.widget.LinearLayout.LayoutParams(
+                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
+                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+            setPadding(12, 6, 12, 6)
+            setBackgroundColor(android.graphics.Color.parseColor(bg))
+        }
+        
+        val textView = TextView(activity).apply {
+            this.text = text
+            textSize = 12f
+            setTextColor(android.graphics.Color.parseColor(fg))
+            typeface = Typeface.DEFAULT_BOLD
+        }
+        
+        pill.addView(textView)
+        return pill
+    }
+
+    fun updateIndicators(
+        attentionScore: Float,
+        vadScore: Float,
+        mode: String,
+        riskState: String,
+        interactionLevel: Int,
+        driveMinutes: Int,
+        vocalEnergy: Float,
+        responseLatency: Float,
+        roadType: String,
+        circadianWindow: String,
+        driverProfile: String,
+        vocalEnergyTrend: Float,
+        latencyTrend: Float,
+        speedVariance: Float
+    ) {
+        indicatorsPanel?.updateIndicators(
+            attentionScore, vadScore, mode, riskState, interactionLevel,
+            driveMinutes, vocalEnergy, responseLatency, roadType, circadianWindow,
+            driverProfile, vocalEnergyTrend, latencyTrend, speedVariance
+        )
+    }
+
     fun updateRisk(risk: RiskData) {
         val pct = (risk.riskScore * 100).toInt()
         animateProgress(pct)
+        
+        // Convert riskScore to KSS (1-9)
+        val attentionPercent = ((1.1f - risk.riskScore) / 1.1f * 100).toInt().coerceIn(0, 100)
+        val kssValue = when {
+            attentionPercent >= 90 -> 1 // Extremely alert
+            attentionPercent >= 80 -> 2 // Very alert
+            attentionPercent >= 70 -> 3 // Alert
+            attentionPercent >= 60 -> 4 // Rather alert
+            attentionPercent >= 50 -> 5 // Neither alert nor sleepy
+            attentionPercent >= 40 -> 6 // Some signs of sleepiness
+            attentionPercent >= 30 -> 7 // Sleepy, no effort
+            attentionPercent >= 20 -> 8 // Sleepy, some effort
+            else -> 9 // Very sleepy, fighting sleep
+        }
 
         val (status, color) = when {
-            risk.riskScore >= 0.6f -> "⚠️ HIGH RISK" to "#FF6B6B"
-            risk.riskScore >= 0.3f -> "⚡ MEDIUM RISK" to "#FFB74D"
+            kssValue >= 7 -> "⚠️ HIGH RISK" to "#FF6B6B"
+            kssValue >= 5 -> "⚡ MEDIUM RISK" to "#FFB74D"
             else -> "✓ LOW RISK" to "#4CAF50"
         }
 
         riskText.apply {
-            text = "${String.format("%.2f", risk.riskScore)} / 1.00 - $status"
+            text = "KSS $kssValue / 9 - $status"
             setTextColor(android.graphics.Color.parseColor(color))
         }
 

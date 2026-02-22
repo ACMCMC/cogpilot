@@ -22,9 +22,8 @@ class CogPilotMediaService : MediaBrowserService() {
     override fun onCreate() {
         super.onCreate()
 
-        // Create a MediaSession
+        // Create a MediaSession without overriding media hardware buttons
         mediaSession = MediaSession(this, "CogPilotMediaService").apply {
-            setFlags(MediaSession.FLAG_HANDLES_MEDIA_BUTTONS or MediaSession.FLAG_HANDLES_TRANSPORT_CONTROLS)
             isActive = true
         }
         sessionToken = mediaSession?.sessionToken
@@ -76,22 +75,38 @@ class CogPilotMediaService : MediaBrowserService() {
             return
         }
         
-        // Convert risk score to attention percentage (Inverse of risk)
+        // Convert risk score to attention percentage
         val attentionPercent = ((1.1f - currentScore) / 1.1f * 100).toInt().coerceIn(0, 100)
         
-        // Android Auto limits colors, so we use descriptive labels
-        val stateLabel = when {
-            attentionPercent >= 90 -> "Optimal Focus"
-            attentionPercent >= 75 -> "Stable"
-            attentionPercent >= 55 -> "Drift Detected"
-            attentionPercent >= 35 -> "Check-in Required"
-            else -> "CAUTION: FATIGUED"
+        // Map attention percentage to KSS (Karolinska Sleepiness Scale: 1-9)
+        val kssValue = when {
+            attentionPercent >= 90 -> 1 // Extremely alert
+            attentionPercent >= 80 -> 2 // Very alert
+            attentionPercent >= 70 -> 3 // Alert
+            attentionPercent >= 60 -> 4 // Rather alert
+            attentionPercent >= 50 -> 5 // Neither alert nor sleepy
+            attentionPercent >= 40 -> 6 // Some signs of sleepiness
+            attentionPercent >= 30 -> 7 // Sleepy, no effort
+            attentionPercent >= 20 -> 8 // Sleepy, some effort
+            else -> 9 // Very sleepy, fighting sleep
+        }
+        
+        val stateLabel = when (kssValue) {
+            1 -> "Extremely Alert"
+            2 -> "Very Alert"
+            3 -> "Alert"
+            4 -> "Rather Alert"
+            5 -> "Neutral"
+            6 -> "Slight Sleepiness"
+            7 -> "Sleepy"
+            8 -> "Very Sleepy"
+            else -> "FIGHTING SLEEP"
         }
 
-        // Add the primary header item showing total attention
+        // Add the primary header item showing KSS
         val headerDesc = MediaDescription.Builder()
             .setMediaId("cogpilot_status_header")
-            .setTitle("Attention: $attentionPercent% — $stateLabel")
+            .setTitle("KSS Level: $kssValue — $stateLabel")
             .setSubtitle("Score: ${String.format("%.2f", currentScore)} / 1.10")
             .build()
         mediaItems.add(MediaBrowser.MediaItem(headerDesc, MediaBrowser.MediaItem.FLAG_PLAYABLE))

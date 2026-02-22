@@ -66,6 +66,11 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="fyi.acmc.cogpilot" android:host="spotify-callback" />
             </intent-filter>
+            <!-- Android Auto Media Search Support -->
+            <intent-filter>
+                <action android:name="android.media.action.MEDIA_PLAY_FROM_SEARCH" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
         </activity>
 
         <receiver

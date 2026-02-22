@@ -56,7 +56,8 @@ class RiskDecisionEngine(private val context: Context) {
     private val riskStateHistory = ConcurrentLinkedQueue<RiskState>()  // last 5 decisions
     private var cumulativeDriveMinutes: Int = 0 // Persistent across trips in same session
     private var lastDecisionTime: Long = 0L
-    private var lastInteractionTime: Long = 0L
+    private var isInteractionActive: Boolean = false
+    private var lastInteractionEndTime: Long = 0L
 
     // Current session data
     private var lastLocation: Location? = null
@@ -113,13 +114,20 @@ class RiskDecisionEngine(private val context: Context) {
         clearHistory()
         currentRiskState = RiskState.STABLE
         currentInteractionLevel = 0
-        lastInteractionTime = 0L
+        isInteractionActive = false
+        lastInteractionEndTime = 0L
         onRiskScoreUpdated?.invoke(0f, RiskState.STABLE, "Not driving")
     }
 
     fun recordInteraction() {
-        lastInteractionTime = System.currentTimeMillis()
-        Log.i(TAG, "🕒 Interaction recorded. Suppression active (60s recovery).")
+        isInteractionActive = true
+        Log.i(TAG, "🗣️ Interaction started")
+    }
+    
+    fun recordInteractionEnd() {
+        isInteractionActive = false
+        lastInteractionEndTime = System.currentTimeMillis()
+        Log.i(TAG, "🤫 Interaction ended")
     }
 
     fun setSleepHours(hours: Int) {
@@ -289,13 +297,8 @@ class RiskDecisionEngine(private val context: Context) {
         // 3. Combined Session Risk Score (Telemetry + Environment)
         val sessionRiskScore = (baseFatigueRisk + envFatigueModifier).coerceIn(0f, 1.1f)
 
-        // 4. Calculate Interaction Suppression Factor S(t) (0.0 to 1.0)
-        val secondsSinceLastInteraction = (now - lastInteractionTime) / 1000f
-        val suppressionMultiplier = if (lastInteractionTime == 0L) 1.0f 
-                                    else Math.min(1.0f, (Math.log(1.0 + secondsSinceLastInteraction) / Math.log(61.0)).toFloat())
-
-        // 5. Final Effective Risk Score (Multiplicative Spacing)
-        val effectiveRiskScore = sessionRiskScore * suppressionMultiplier
+        // 4. Final Effective Risk Score (No artificial suppression multipliers)
+        val effectiveRiskScore = sessionRiskScore
 
         val newRiskState = when {
             effectiveRiskScore >= 0.95f -> RiskState.CRITICAL
@@ -304,8 +307,12 @@ class RiskDecisionEngine(private val context: Context) {
             else -> RiskState.STABLE
         }
 
-        // 7. Determine interaction level based on unified score
+        // 7. Determine interaction level based on unified score, with strict cooldown blocks
+        // Ensure no interactions trigger if we are actively talking, or just finished within 30s
+        val isCooldownActive = isInteractionActive || (now - lastInteractionEndTime < 30000L)
+        
         val newInteractionLevel = when {
+            isCooldownActive -> 0 // 🛑 TOTAL SUPPRESSION: Wait until 30s post-interaction
             effectiveRiskScore >= 0.95f -> 4 // Safety Command
             effectiveRiskScore >= 0.88f -> 3 // Persuasive Argument
             effectiveRiskScore >= 0.75f -> 1 // Mandatory Check-in (75% threshold)
@@ -322,8 +329,7 @@ class RiskDecisionEngine(private val context: Context) {
                             newRiskState, newInteractionLevel, sessionMinutes,
                             currentVocalEnergyTrend, currentLatencyTrend, currentPaceTrend,
                             baseFatigueRisk, envFactors, agenticAttentionScore,
-                            paceRisk, energyRisk, latencyRisk, agenticRisk,
-                            suppressionMultiplier
+                            paceRisk, energyRisk, latencyRisk, agenticRisk
                         )
 
             Log.i(TAG, "🔄 Risk state changed: $newRiskState (Level $newInteractionLevel) - $reason")
@@ -334,8 +340,7 @@ class RiskDecisionEngine(private val context: Context) {
             currentRiskState, currentInteractionLevel, sessionMinutes,
             currentVocalEnergyTrend, currentLatencyTrend, currentPaceTrend,
             baseFatigueRisk, envFactors, agenticAttentionScore,
-            paceRisk, energyRisk, latencyRisk, agenticRisk,
-            suppressionMultiplier
+            paceRisk, energyRisk, latencyRisk, agenticRisk
         )
 
         // Always notify of score update for UI/Android Auto updates
@@ -643,19 +648,17 @@ class RiskDecisionEngine(private val context: Context) {
         paceRisk: Float,
         energyRisk: Float,
         latencyRisk: Float,
-        agenticRisk: Float,
-        suppressionMultiplier: Float
+        agenticRisk: Float
     ): String {
         return String.format(
-            "[Base(Engy(%.2f)*.15=%.2f + Lat(%.0f)*.20=%.2f + Pace(%.1f)*.15=%.2f + Agnt(%.2f)*.1=%.2f) + Env(%.2f)] * Supp(%.2f) = %.2f\n" +
+            "[Base(Engy(%.2f)*.15=%.2f + Lat(%.0f)*.20=%.2f + Pace(%.1f)*.15=%.2f + Agnt(%.2f)*.1=%.2f) + Env(%.2f)] = %.2f\n" +
             "Env: Tim(%dm)=%.2f Cir(%s)=%.2f Trf(%s)=%.2f Rd(%s,%.0fmph)=%.2f Tmp(%.0fF)=%.2f SlpPrf(%.1fh,%s)=%.2f",
             vocalTrend, energyRisk * 0.15f, 
             latencyTrend, latencyRisk * 0.20f, 
             paceTrend, paceRisk * 0.15f, 
             agentScore, agenticRisk * 0.10f,
             env.total, 
-            suppressionMultiplier,
-            ((baseFatigue + env.total) * suppressionMultiplier).coerceIn(0f, 1.1f),
+            (baseFatigue + env.total).coerceIn(0f, 1.1f),
 
             env.durationRaw, env.duration, 
             env.circadianRaw.name.take(3), env.circadian, 

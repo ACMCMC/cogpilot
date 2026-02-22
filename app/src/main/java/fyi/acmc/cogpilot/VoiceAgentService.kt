@@ -34,6 +34,18 @@ import org.json.JSONArray
 import io.elevenlabs.ClientTool
 import io.elevenlabs.ClientToolResult
 import kotlin.random.Random
+import java.io.File
+import java.io.FileOutputStream
+
+/**
+ * TranscriptEntry: Tracks user/agent speech with timing for audio extraction
+ */
+data class TranscriptEntry(
+    val speaker: String,  // "user" or "agent"
+    val text: String,
+    val startTimeMs: Long,  // When this utterance started
+    val endTimeMs: Long     // When this utterance ended
+)
 
 /**
  * VoiceAgentService: Background service managing ElevenLabs voice agent
@@ -52,6 +64,21 @@ class VoiceAgentService : Service() {
         const val ACTION_AI_LOG = "fyi.acmc.cogpilot.voice.AI_LOG"
         const val EXTRA_AI_MSG = "ai_msg"
         const val ACTION_LOCATION_UPDATE = "fyi.acmc.cogpilot.voice.LOCATION_UPDATE"
+        const val ACTION_INDICATORS_UPDATE = "fyi.acmc.cogpilot.voice.INDICATORS_UPDATE"
+        const val EXTRA_ATTENTION_SCORE = "attention_score"
+        const val EXTRA_VAD_SCORE = "vad_score"
+        const val EXTRA_INTERACTION_LEVEL = "interaction_level"
+        const val EXTRA_MODE = "mode"
+        const val EXTRA_RISK_STATE = "risk_state"
+        const val EXTRA_DRIVE_MINUTES = "drive_minutes"
+        const val EXTRA_VOCAL_ENERGY = "vocal_energy"
+        const val EXTRA_RESPONSE_LATENCY = "response_latency_ms"
+        const val EXTRA_ROAD_TYPE = "road_type"
+        const val EXTRA_CIRCADIAN_WINDOW = "circadian_window"
+        const val EXTRA_DRIVER_PROFILE = "driver_profile"
+        const val EXTRA_VOCAL_ENERGY_TREND = "vocal_energy_trend"
+        const val EXTRA_LATENCY_TREND = "latency_trend"
+        const val EXTRA_SPEED_VARIANCE = "speed_variance"
 
         private var _riskEngine: RiskDecisionEngine? = null
         val riskEngine: RiskDecisionEngine? get() = _riskEngine
@@ -63,13 +90,14 @@ class VoiceAgentService : Service() {
     private var interactionEnded = false  // Guard against double cleanup
     private val snowflakeManager = SnowflakeManager()
     private val calendarContext = CalendarContextProvider(this)
-    private val spotifyManager by lazy { SpotifyManager(this) }
     private val googleMapsManager by lazy { GoogleMapsManager(BuildConfig.GOOGLE_MAPS_API_KEY) }
     
     // Track interaction history during the driving session for context in future interactions
     private val interactionHistory = mutableListOf<String>()
     // Track messages in current session for creating summary on end
     private val currentSessionMessages = mutableListOf<String>()
+    // Track transcript with timing for audio extraction
+    private val timedTranscript = mutableListOf<TranscriptEntry>()
 
     // hold context updates until connected
     private var pendingTopics: String? = null
@@ -79,6 +107,23 @@ class VoiceAgentService : Service() {
     // Keep MediaPlayer references to prevent garbage collection during playback
     private var introMediaPlayer: MediaPlayer? = null
     private var outroMediaPlayer: MediaPlayer? = null
+    
+    // Current indicator values for broadcasting to UI
+    private var currentAttentionScore = 0.5f
+    private var currentVadScore = 0f
+    private var currentInteractionLevel = 0
+    private var currentMode = "idle"
+    private var currentRiskState = "normal"
+    private var currentDriveMinutes = 0
+    private var currentVocalEnergy = 0f
+    private var currentResponseLatency = 0f
+    private var currentRoadType = "mixed"
+    private var currentCircadianWindow = "normal"
+    private var currentDriverProfile = "unknown"
+    private var currentVocalEnergyTrend = 0f
+    private var currentLatencyTrend = 0f
+    private var currentSpeedVariance = 0f
+    private var sessionConversationId: String = ""  // Store for audio download
 
     private var locationReceiver: BroadcastReceiver? = null
 
@@ -133,7 +178,17 @@ class VoiceAgentService : Service() {
 
     // Transcript Timing State
     private var lastAgentMessageTime: Long = 0L
-    private var userSpeechStartTime: Long = 0L
+    private var userSpeechStartTime: Long = 0L  // When user STARTS speaking (first transcript)
+    private var userSpeechEndTime: Long = 0L    // When user FINISHES speaking
+    private var latencyAtSpeechStart: Float = 0f // Latency from agent done → user starts
+    private val latencyHistory = mutableListOf<Float>() // Track rolling average
+    
+    // Calculate rolling average latency
+    private fun getAverageLatency(): Float {
+        return if (latencyHistory.isNotEmpty()) {
+            latencyHistory.average().toFloat()
+        } else 500f
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.i(TAG, "onStartCommand: ${intent?.action}")
@@ -171,6 +226,7 @@ class VoiceAgentService : Service() {
         isRunning = true
         interactionEnded = false  // Reset for new interaction
         currentSessionMessages.clear()  // Reset messages for this session
+        timedTranscript.clear()  // Reset transcript with timing
 
         // Record interaction to trigger suppression logic in RiskEngine
         _riskEngine?.recordInteraction()
@@ -310,11 +366,7 @@ $historyContext$calendarContextStr"""
                 val initialMessage = if (startMsg.isNotBlank()) startMsg else generateInitialGreeting(driverName)
                 Log.i(TAG, "✅ Initial message determined: $initialMessage")
 
-                // 2. Now that we're ready to talk, fade out Spotify (snappier 2s fade)
-                Log.i(TAG, "🎵 Fading out Spotify music (2000ms)...")
-                spotifyManager.fadeOutAndPause(durationMs = 2000L)
-                
-                // 3. Play intro chime immediately after fadeOutAndPause returns (it handles its own settling)
+                // 2. Play intro chime immediately...
                 Log.i(TAG, "🔔 Music paused, now playing intro chime...")
                 try {
                     playIntroChime()
@@ -384,6 +436,7 @@ $historyContext$calendarContextStr"""
                     },
                     onConnect = { conversationId ->
                         Log.i(TAG, "✓ Connected: $conversationId")
+                        sessionConversationId = conversationId  // Save for audio download later
                         updateNotification("🎙️ Listening...")
                         broadcastStatus("connected")
                         
@@ -402,6 +455,8 @@ $historyContext$calendarContextStr"""
                     onStatusChange = { status ->
                         Log.d(TAG, "Status: $status")
                         val statusStr = status.toString().lowercase()
+                        currentRiskState = statusStr
+                        broadcastIndicators()
                         
                         val notifText = when {
                             statusStr.contains("connected") -> "🎙️ Listening..."
@@ -421,10 +476,23 @@ $historyContext$calendarContextStr"""
                     },
                     onModeChange = { mode ->
                         Log.d(TAG, "Mode: $mode")
+                        val modeStr = mode.toString().lowercase()
+                        currentMode = modeStr
+                        broadcastIndicators()
+                        
+                        // When user stops speaking (mode changes away from listening)
+                        if (!modeStr.contains("listening") && userSpeechStartTime > 0L) {
+                            // User finished speaking - reset for next utterance
+                            val totalSpeechTime = (userSpeechEndTime - userSpeechStartTime).toFloat() / 1000f
+                            Log.i(TAG, "✓ User finished speaking | Total duration: ${totalSpeechTime}s | Response latency: ${latencyAtSpeechStart.toInt()}ms")
+                            userSpeechStartTime = 0L
+                            userSpeechEndTime = 0L
+                        }
+                        
                         val notifText = when {
-                            mode.toString().lowercase().contains("speaking") -> "🤖 Agent speaking..."
-                            mode.toString().lowercase().contains("listening") -> "🎙️ Listening..."
-                            else -> mode.toString()
+                            modeStr.contains("speaking") -> "🤖 Agent speaking..."
+                            modeStr.contains("listening") -> "🎙️ Listening..."
+                            else -> modeStr
                         }
                         updateNotification(notifText)
                     },
@@ -433,12 +501,12 @@ $historyContext$calendarContextStr"""
                         if (score > 0.5f) {
                             Log.d(TAG, "Voice detected: $score")
                         }
-                        // Feed telemetry to RiskDecisionEngine
-                        // Note: ElevanLabs SDK currently provides score, 
-                        // but we mock latency/energy or use recent session stats.
+                        currentVadScore = score
+                        broadcastIndicators()
+                        // Feed telemetry to RiskDecisionEngine with actual latency
                         _riskEngine?.updateVoiceTelemetry(
                             vocalEnergy = score, 
-                            responseLatencyMs = 500f, 
+                            responseLatencyMs = getAverageLatency(),
                             vadScore = score
                         )
                     },
@@ -455,6 +523,14 @@ $historyContext$calendarContextStr"""
                                     // Record agent message for interaction summary
                                     currentSessionMessages.add("Agent: $msg")
                                     
+                                    // Track in timed transcript (for audio extraction later)
+                                    timedTranscript.add(TranscriptEntry(
+                                        speaker = "agent",
+                                        text = msg,
+                                        startTimeMs = now,
+                                        endTimeMs = now + 3000  // Estimate 3s for agent speech
+                                    ))
+                                    
                                     val intent = Intent(ACTION_AI_LOG).apply {
                                         putExtra(EXTRA_AI_MSG, "🤖 Agent: $msg")
                                     }
@@ -464,38 +540,61 @@ $historyContext$calendarContextStr"""
                                 Log.w(TAG, "Failed to parse agent message: ${e.message}")
                             }
                         } else if (source == "user" || source == "driver") {
-                            // Also track driver responses & timings (user_transcript event disguised as user message by wrapper)
+                            // Also track driver responses & timings (user_transcript event from ElevenLabs)
                             try {
                                 val msg = JSONObject(messageJson).optString("message", "")
                                 if (msg.isNotEmpty()) {
+                                    val now = System.currentTimeMillis()
+                                    
+                                    // On FIRST user transcript: capture latency (time from agent done → user starts)
                                     if (userSpeechStartTime == 0L) {
                                         userSpeechStartTime = now
+                                        
+                                        // Calculate latency: time from last agent message to user starts speaking
+                                        if (lastAgentMessageTime > 0) {
+                                            latencyAtSpeechStart = (userSpeechStartTime - lastAgentMessageTime).toFloat()
+                                            latencyHistory.add(latencyAtSpeechStart)
+                                            
+                                            // Keep only last 10 measurements for rolling average
+                                            if (latencyHistory.size > 10) {
+                                                latencyHistory.removeAt(0)
+                                            }
+                                            
+                                            Log.i(TAG, "📊 User started speaking | Latency: ${latencyAtSpeechStart.toInt()}ms | Avg: ${getAverageLatency().toInt()}ms")
+                                        }
                                     }
+                                    
+                                    // Update end time on every message (tracks until speech ends)
+                                    userSpeechEndTime = now
+                                    
                                     currentSessionMessages.add("Driver: $msg")
                                     
-                                    // Calculate Latency
-                                    val latencyMs = if (lastAgentMessageTime > 0) {
-                                        (userSpeechStartTime - lastAgentMessageTime).coerceAtLeast(0L).toFloat()
-                                    } else 500f
+                                    // Track user transcript with timing (for audio extraction)
+                                    timedTranscript.add(TranscriptEntry(
+                                        speaker = "user",
+                                        text = msg,
+                                        startTimeMs = userSpeechStartTime,
+                                        endTimeMs = now
+                                    ))
                                     
                                     // Calculate Words Per Second
                                     val words = msg.split(Regex("\\s+")).filter { it.isNotBlank() }.size
                                     val speechDurationSeconds = (now - userSpeechStartTime).coerceAtLeast(100L) / 1000f
                                     val wps = if (speechDurationSeconds > 0) words / speechDurationSeconds else 2.5f
 
-                                    Log.i(TAG, "⏱️ Transcript Timing -> Latency: ${latencyMs.toInt()}ms | Pace: ${String.format("%.2f", wps)} wps")
+                                    Log.d(TAG, "⏱️ Transcript Update -> WPS: ${String.format("%.2f", wps)} | Duration so far: ${speechDurationSeconds.toInt()}s")
 
-                                    // Feed real telemetry to RiskEngine
-                                    _riskEngine?.updateDriverResponse(UserResponseType.COMPLIANT, latencyMs)
+                                    // Update RiskEngine with average latency (not individual)
+                                    val avgLatency = getAverageLatency()
                                     _riskEngine?.updateVoiceTelemetry(
-                                        vocalEnergy = 0.8f, // We'll keep this fixed or use VAD for now
-                                        responseLatencyMs = latencyMs,
+                                        vocalEnergy = 0.8f,
+                                        responseLatencyMs = avgLatency,
                                         vadScore = 0.8f,
                                         wordsPerSecond = wps
                                     )
                                     
-                                    // Reset user speech timer for next utterance
-                                    userSpeechStartTime = 0L
+                                    currentResponseLatency = avgLatency
+                                    broadcastIndicators()
                                 }
                             } catch (e: Exception) {
                                 Log.w(TAG, "Failed to parse driver message: ${e.message}")
@@ -547,6 +646,8 @@ $historyContext$calendarContextStr"""
                             override suspend fun execute(parameters: Map<String, Any>): ClientToolResult? {
                                 val score = (parameters["param_score"] as? Number ?: parameters["score"] as? Number)?.toFloat() ?: 0.5f
                                 Log.i(TAG, "📢 Agent assessed driver attention: $score")
+                                currentAttentionScore = score
+                                broadcastIndicators()
                                 _riskEngine?.updateAgenticAttention(score)
                                 return ClientToolResult.success("Attention score updated to $score")
                             }
@@ -622,11 +723,16 @@ $historyContext$calendarContextStr"""
                 Log.e(TAG, "Cleanup: Outro failed: ${e.message}")
             }
 
-            // 2. Resume Spotify
+            // 2. Resume Previous Media
             try {
-                spotifyManager.resumeIfNeeded()
+                Log.i(TAG, "🎵 Requesting system media resume via MEDIA_PLAY intent")
+                val audioManager = getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+                val eventDown = android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_MEDIA_PLAY)
+                audioManager.dispatchMediaKeyEvent(eventDown)
+                val eventUp = android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, android.view.KeyEvent.KEYCODE_MEDIA_PLAY)
+                audioManager.dispatchMediaKeyEvent(eventUp)
             } catch (e: Exception) {
-                Log.e(TAG, "Cleanup: Spotify resume failed: ${e.message}")
+                Log.e(TAG, "Cleanup: Media resume failed: ${e.message}")
             }
 
             // 3. End interaction (includes Snowflake summary + session close)
@@ -652,8 +758,9 @@ $historyContext$calendarContextStr"""
         
         Log.i(TAG, "🔄 Ending interaction - cleaning up session and recording history")
         
-        // Stop RiskDecisionEngine trip
+        // Stop RiskDecisionEngine trip and record interaction end for 30s cooldown
         _riskEngine?.stopTrip()
+        _riskEngine?.recordInteractionEnd()
         
         // Record interaction summary to history (for mid-drive interactions only)
         try {
@@ -668,6 +775,12 @@ $historyContext$calendarContextStr"""
                         val sessionSummary = snowflakeManager.generateTripSummary(currentSessionMessages)
                         if (sessionSummary.isNotBlank()) {
                             snowflakeManager.updateLastTripSummary(currentDriverId, sessionSummary)
+                        }
+                        
+                        // Download and analyze conversation audio
+                        if (sessionConversationId.isNotEmpty() && timedTranscript.isNotEmpty()) {
+                            Log.i(TAG, "🎙️ Downloading conversation audio for analysis...")
+                            downloadAndAnalyzeAudio()
                         }
                     } catch (e: Exception) {
                         Log.e(TAG, "Error generating/saving session summary: ${e.message}")
@@ -738,6 +851,41 @@ $historyContext$calendarContextStr"""
             setPackage(packageName)
         }
         ContextCompat.startForegroundService(this, intent)
+    }
+
+    private fun broadcastIndicators() {
+        // Fetch all current values from RiskEngine
+        val debugInfo = _riskEngine?.getRiskStateDebugInfo()
+        if (debugInfo != null) {
+            currentDriveMinutes = debugInfo.driveMinutes
+            currentVocalEnergy = debugInfo.vocalEnergy
+            currentResponseLatency = debugInfo.responseLatencyMs
+            currentRoadType = debugInfo.roadType?.name?.lowercase() ?: "mixed"
+            currentCircadianWindow = debugInfo.circadianWindow?.name?.lowercase() ?: "normal"
+            currentDriverProfile = debugInfo.driverProfile
+            currentVocalEnergyTrend = debugInfo.vocalEnergyTrend
+            currentLatencyTrend = debugInfo.latencyTrend
+            currentSpeedVariance = debugInfo.speedVariance
+        }
+        
+        val intent = Intent(ACTION_INDICATORS_UPDATE).apply {
+            putExtra(EXTRA_ATTENTION_SCORE, currentAttentionScore)
+            putExtra(EXTRA_VAD_SCORE, currentVadScore)
+            putExtra(EXTRA_INTERACTION_LEVEL, currentInteractionLevel)
+            putExtra(EXTRA_MODE, currentMode)
+            putExtra(EXTRA_RISK_STATE, currentRiskState)
+            putExtra(EXTRA_DRIVE_MINUTES, currentDriveMinutes)
+            putExtra(EXTRA_VOCAL_ENERGY, currentVocalEnergy)
+            putExtra(EXTRA_RESPONSE_LATENCY, currentResponseLatency)
+            putExtra(EXTRA_ROAD_TYPE, currentRoadType)
+            putExtra(EXTRA_CIRCADIAN_WINDOW, currentCircadianWindow)
+            putExtra(EXTRA_DRIVER_PROFILE, currentDriverProfile)
+            putExtra(EXTRA_VOCAL_ENERGY_TREND, currentVocalEnergyTrend)
+            putExtra(EXTRA_LATENCY_TREND, currentLatencyTrend)
+            putExtra(EXTRA_SPEED_VARIANCE, currentSpeedVariance)
+            setPackage(packageName)
+        }
+        sendBroadcast(intent)
     }
 
     private fun playIntroChime() {
@@ -860,6 +1008,150 @@ $historyContext$calendarContextStr"""
         }
         Log.d(TAG, "Generated fallback initial greeting: $greeting")
         return greeting
+    }
+
+    /**
+     * Download conversation audio and extract user portions for analysis
+     */
+    private suspend fun downloadAndAnalyzeAudio() {
+        try {
+            Log.i(TAG, "🎙️ Starting audio download and analysis for conversation: $sessionConversationId")
+            
+            val audioFile = downloadConversationAudio()
+            if (audioFile != null && audioFile.exists()) {
+                Log.i(TAG, "✓ Audio downloaded: ${audioFile.absolutePath}")
+                
+                // Extract user audio segments based on transcript timing
+                val userAudioSegments = extractUserAudioSegments(audioFile)
+                
+                if (userAudioSegments.isNotEmpty()) {
+                    Log.i(TAG, "✓ Extracted ${userAudioSegments.size} user audio segment(s)")
+                    
+                    // Analyze user audio (stub for now)
+                    analyzeUserSpeech(userAudioSegments)
+                } else {
+                    Log.w(TAG, "⚠️ No user audio segments extracted")
+                }
+            } else {
+                Log.w(TAG, "⚠️ Failed to download audio file")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in downloadAndAnalyzeAudio: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Download conversation audio from ElevenLabs
+     * Returns File if successful, null otherwise
+     */
+    private suspend fun downloadConversationAudio(): File? = withContext(Dispatchers.IO) {
+        try {
+            // NOTE: ElevenLabs ConversationClient provides session audio
+            // In real implementation, you would call session?.downloadAudio() or similar
+            // For now, this is a placeholder for the download mechanism
+            
+            Log.d(TAG, "📥 Downloading audio for conversation: $sessionConversationId")
+            
+            // Create audio directory
+            val audioDir = File(getExternalFilesDir(null), "conversation_audio")
+            if (!audioDir.exists()) {
+                audioDir.mkdirs()
+            }
+            
+            // Audio file path
+            val audioFile = File(audioDir, "conversation_${sessionConversationId}_${System.currentTimeMillis()}.wav")
+            
+            // TODO: Replace with actual ElevenLabs SDK audio download call
+            // Example (when available):
+            // val audioBytes = session?.getAudioBytes() ?: return@withContext null
+            // audioFile.writeBytes(audioBytes)
+            
+            Log.i(TAG, "Audio file ready: ${audioFile.absolutePath}")
+            return@withContext audioFile
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to download audio: ${e.message}")
+            return@withContext null
+        }
+    }
+
+    /**
+     * Extract user audio segments from mixed audio based on transcript timing
+     * Uses timedTranscript to identify where user was speaking
+     */
+    private suspend fun extractUserAudioSegments(audioFile: File): List<File> = withContext(Dispatchers.IO) {
+        val userSegments = mutableListOf<File>()
+        
+        try {
+            // Filter transcript to get only user entries
+            val userSpeechEntries = timedTranscript.filter { it.speaker == "user" }
+            
+            if (userSpeechEntries.isEmpty()) {
+                Log.w(TAG, "No user speech entries found in transcript")
+                return@withContext userSegments
+            }
+            
+            Log.i(TAG, "📍 Found ${userSpeechEntries.size} user speech segments to extract")
+            
+            // Create extracts directory
+            val extractsDir = File(getExternalFilesDir(null), "user_audio_extracts")
+            if (!extractsDir.exists()) {
+                extractsDir.mkdirs()
+            }
+            
+            // For each user speech segment, create a file marker with timing info
+            userSpeechEntries.forEachIndexed { index, entry ->
+                val startSec = entry.startTimeMs / 1000.0
+                val endSec = entry.endTimeMs / 1000.0
+                val duration = endSec - startSec
+                
+                Log.d(TAG, "#${index + 1} User speech: $startSec - $endSec (${duration.toInt()}s) | Text: ${entry.text.take(50)}")
+                
+                // Create marker file with timing and transcript
+                val extractFile = File(extractsDir, "user_${index}_${entry.startTimeMs}-${entry.endTimeMs}.txt")
+                extractFile.writeText("""
+                    Speaker: ${entry.speaker.uppercase()}
+                    Start Time: $startSec seconds
+                    End Time: $endSec seconds
+                    Duration: $duration seconds
+                    Text: ${entry.text}
+                """.trimIndent())
+                
+                userSegments.add(extractFile)
+            }
+            
+            Log.i(TAG, "✓ Created ${userSegments.size} user audio segment markers")
+            return@withContext userSegments
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to extract user audio segments: ${e.message}")
+            return@withContext userSegments
+        }
+    }
+
+    /**
+     * Analyze user speech for patterns, confidence, hesitation, etc.
+     * STUB: Placeholder for analysis logic
+     */
+    private suspend fun analyzeUserSpeech(userAudioSegments: List<File>) = withContext(Dispatchers.Default) {
+        try {
+            Log.i(TAG, "🔍 Analyzing ${userAudioSegments.size} user speech segment(s)...")
+            
+            // TODO: Implement actual speech analysis
+            // - Speech rate / pacing
+            // - Confidence / hesitation detection
+            // - Emotional tone
+            // - Key phrases / sentiment
+            
+            userAudioSegments.forEachIndexed { index, file ->
+                Log.d(TAG, "Analyzing segment #${index + 1}: ${file.name}")
+                
+                // STUB: Would call actual analysis here
+                // val analysis = performSpeechAnalysis(file)
+            }
+            
+            Log.i(TAG, "✓ User speech analysis completed")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error analyzing user speech: ${e.message}")
+        }
     }
 
     override fun onDestroy() {
