@@ -29,7 +29,7 @@ class MapsRoadsClient(private val context: Context) {
         }
 
         val placeId = fetchNearestRoadPlaceId(lat, lon)
-        val speedInfo = fetchSpeedLimit(lat, lon)
+        val speedInfo = if (placeId != null) fetchSpeedLimit(placeId) else null
         val trafficRatio = fetchTrafficRatio(lat, lon)
         val types = if (placeId != null) fetchPlaceTypes(placeId, now) else emptyList()
 
@@ -54,13 +54,17 @@ class MapsRoadsClient(private val context: Context) {
         val json = JSONObject(body)
         val points = json.optJSONArray("snappedPoints") ?: return null
         val point0 = points.optJSONObject(0) ?: return null
-        val pid = point0.optString("placeId", null)
+        val pid = point0.optString("placeId", "").takeIf { it.isNotEmpty() }
         Log.d("MapsRoadsClient","nearestRoads placeId= $pid")
         return pid
     }
 
-    private fun fetchSpeedLimit(lat: Double, lon: Double): SpeedLimitInfo? {
-        val url = "https://roads.googleapis.com/v1/speedLimits?points=$lat,$lon&key=$apiKey"
+    /**
+     * The Roads API speedLimits endpoint requires a snapped placeId, NOT raw lat/lon.
+     * Correct URL: /v1/speedLimits?placeId=<placeId>&key=<key>
+     */
+    private fun fetchSpeedLimit(placeId: String): SpeedLimitInfo? {
+        val url = "https://roads.googleapis.com/v1/speedLimits?placeId=$placeId&key=$apiKey"
         Log.d("MapsRoadsClient","speedLimits request: $url")
         val body = http.newCall(Request.Builder().url(url).build()).execute().body?.string() ?: return null
         Log.d("MapsRoadsClient","speedLimits response: ${body.take(200)}")

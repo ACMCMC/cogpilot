@@ -11,6 +11,8 @@ lifecycle = "2.7.0"
 coroutines = "1.8.0"
 okhttp = "4.12.0"
 elevenlabs = "0.5.0"
+mockito = "5.11.0"
+orgJson = "20240303"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -24,6 +26,8 @@ okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhtt
 androidx-lifecycle-runtime = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycle" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 elevenlabs-android = { group = "io.elevenlabs", name = "elevenlabs-android", version.ref = "elevenlabs" }
+mockito-core = { group = "org.mockito", name = "mockito-core", version.ref = "mockito" }
+org-json = { group = "org.json", name = "json", version.ref = "orgJson" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

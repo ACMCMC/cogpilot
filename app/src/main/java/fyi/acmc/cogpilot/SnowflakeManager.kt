@@ -9,9 +9,9 @@ import org.json.JSONObject
  * SnowflakeManager: Direct connection to Snowflake from Android.
  * Credentials from BuildConfig (environment variables).
  */
-class SnowflakeManager {
-
-    private val sqlApi = SnowflakeSqlApiClient()
+class SnowflakeManager(
+    internal val sqlApi: SnowflakeSqlApiClient = SnowflakeSqlApiClient()
+) {
 
     suspend fun initConnection(): Boolean = withContext(Dispatchers.IO) {
         Log.i("SnowflakeManager", "Initializing Snowflake connection...")
@@ -59,7 +59,7 @@ class SnowflakeManager {
     }
 
     suspend fun getLastNLogs(n: Int = 24): List<FloatArray> = withContext(Dispatchers.IO) {
-        val sql = "SELECT speed_mph, heading_degrees FROM COGPILOT.PUBLIC.TELEMETRY ORDER BY timestamp_ms DESC LIMIT $n"
+        val sql = "SELECT speed_mph, heading_degrees FROM TELEMETRY ORDER BY timestamp_ms DESC LIMIT $n"
         val result = sqlApi.execute(sql)
         val data = result.optJSONArray("data") ?: return@withContext emptyList()
         val out = mutableListOf<FloatArray>()
@@ -142,7 +142,7 @@ Return as a numbered list.""".trimIndent()
     }
 
     private fun getInterestTopics(driverId: Int): String {
-        val sql = "SELECT profile FROM COGPILOT.PUBLIC.USERS LIMIT 1"
+        val sql = "SELECT profile FROM USERS LIMIT 1"
         val result = sqlApi.execute(sql)
         val data = result.optJSONArray("data")
         val profileJson = data?.optJSONArray(0)?.optString(0, "{}")
@@ -155,7 +155,7 @@ Return as a numbered list.""".trimIndent()
     }
 
     suspend fun getUserProfileById(userId: String): Map<String, String> = withContext(Dispatchers.IO) {
-        val sql = "SELECT profile FROM COGPILOT.PUBLIC.COGPILOT.PUBLIC.USERS WHERE user_id = '$userId'"
+        val sql = "SELECT profile FROM USERS WHERE user_id = '$userId'"
         Log.d("SnowflakeManager", "getUserProfileById query: $sql")
         val result = sqlApi.execute(sql)
         Log.d("SnowflakeManager", "getUserProfileById response: ${result.toString().take(200)}")

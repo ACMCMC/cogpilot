@@ -47,6 +47,7 @@ class VoiceAgentService : Service() {
     private val calendarContext = CalendarContextProvider(this)
 
     // hold context updates until connected
+    private var pendingSystemContext: String? = null
     private var pendingTopics: String? = null
     private var pendingEventSummary: String? = null
     private var pendingStartMessage: String? = null
@@ -106,10 +107,21 @@ class VoiceAgentService : Service() {
                 if (events.isNotEmpty()) {
                     snowflakeManager.insertCalendarEvents(driverId = 1, events = events)
                 }
-                // prepare plain-text profile description for AI
-                val profText = "You are speaking with $currentDriverId. Profile: interests = ${profile["interests"]}; complexity = ${profile["complexity"]}."
-                Log.d(TAG, "Profile text: $profText")
-                sendUpdate(profText)
+                // Build driver context to inject at conversation start.
+                // Use a readable display name (replace underscores with spaces, title-case).
+                val displayName = currentDriverId
+                    .replace('_', ' ')
+                    .split(' ')
+                    .joinToString(" ") { it.replaceFirstChar(Char::uppercaseChar) }
+                val systemContext = buildString {
+                    appendLine("[DRIVER CONTEXT - use this throughout the conversation]")
+                    appendLine("Name: $displayName")
+                    appendLine("Interests: ${profile["interests"]}")
+                    appendLine("Complexity preference: ${profile["complexity"]}")
+                    appendLine("Address the driver by name ($displayName) naturally but not on every turn.")
+                }
+                Log.d(TAG, "Queued system context:\n$systemContext")
+                pendingSystemContext = systemContext
                 // also log/start message
                 Log.d(TAG, "Start message: $startMsg")
                 pendingStartMessage = startMsg
@@ -131,7 +143,12 @@ class VoiceAgentService : Service() {
                         Log.i(TAG, "✓ Connected: $conversationId")
                         updateNotification("🎙️ Listening...")
                         broadcastStatus("connected")
-                        // now send any pending context
+                        // Send driver profile FIRST so the agent knows who it's talking to
+                        pendingSystemContext?.let {
+                            sendUpdate(it)
+                            Log.d(TAG, "✓ Sent system context (driver profile)")
+                            pendingSystemContext = null
+                        }
                         pendingStartMessage?.let {
                             sendUpdate(it)
                             Log.d(TAG, "✓ Sent start message")
@@ -181,7 +198,21 @@ class VoiceAgentService : Service() {
                         }
                     },
                     onMessage = { source, messageJson ->
-                        Log.d(TAG, "Message from $source: ${messageJson.take(100)}")
+                        Log.d(TAG, "Message from $source: ${messageJson.take(500)}")
+                        // broadcast agent responses to UI
+                        if (source == "agent") {
+                            try {
+                                val msg = JSONObject(messageJson).optString("message", "")
+                                if (msg.isNotEmpty()) {
+                                    val intent = Intent(ACTION_AI_LOG).apply {
+                                        putExtra(EXTRA_AI_MSG, "🤖 Agent: $msg")
+                                    }
+                                    sendBroadcast(intent)
+                                }
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Failed to parse agent message: ${e.message}")
+                            }
+                        }
                     },
                     onUnhandledClientToolCall = { call ->
                         Log.w(TAG, "Unhandled tool call: $call")

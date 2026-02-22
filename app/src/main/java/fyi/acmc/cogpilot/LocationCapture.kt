@@ -56,6 +56,14 @@ class LocationCapture(private val context: Context) {
 
         android.util.Log.i("LocationCapture", "✓ Permissions granted, starting GPS listener")
 
+        // check available providers
+        val allProviders = locationManager.allProviders
+        android.util.Log.i("LocationCapture", "Available location providers: $allProviders")
+        for (provider in allProviders) {
+            val enabled = locationManager.isProviderEnabled(provider)
+            android.util.Log.d("LocationCapture", "  - $provider: enabled=$enabled")
+        }
+
         locationListener = object : LocationListener {
             override fun onLocationChanged(location: Location) {
                 try {
@@ -104,7 +112,7 @@ class LocationCapture(private val context: Context) {
                 } catch (e: Exception) {
                     android.util.Log.e("LocationCapture", "Exception in onLocationChanged: ${e.message}", e)
                 }
-
+            }
 
             override fun onProviderEnabled(provider: String) {
                 android.util.Log.d("LocationCapture", "Provider enabled: $provider")
@@ -118,14 +126,31 @@ class LocationCapture(private val context: Context) {
 
         // Request location updates every 2 seconds (2000 ms) or 10 meters
         try {
-            locationManager.requestLocationUpdates(
-                LocationManager.GPS_PROVIDER,
-                2000L,  // 2 seconds
-                10f,    // 10 meters minimum distance
-                locationListener!!,
-                Looper.getMainLooper()
-            )
-            android.util.Log.i("LocationCapture", "✓ Location updates requested on GPS_PROVIDER")
+            // Try GPS first, then fall back to NETWORK
+            val providers = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
+            var attached = false
+            
+            for (provider in providers) {
+                try {
+                    if (locationManager.isProviderEnabled(provider)) {
+                        locationManager.requestLocationUpdates(
+                            provider,
+                            2000L,
+                            10f,
+                            locationListener!!,
+                            Looper.getMainLooper()
+                        )
+                        android.util.Log.i("LocationCapture", "✓ Location updates requested on $provider")
+                        attached = true
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.w("LocationCapture", "Could not attach to $provider: ${e.message}")
+                }
+            }
+            
+            if (!attached) {
+                android.util.Log.e("LocationCapture", "✗ No location providers could be attached!")
+            }
         } catch (e: Exception) {
             android.util.Log.e("LocationCapture", "Error requesting location updates: ${e.message}", e)
         }

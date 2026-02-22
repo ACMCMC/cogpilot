@@ -6,169 +6,135 @@ import org.json.JSONObject
 import org.junit.Before
 import org.junit.Test
 import org.junit.Assert.*
-import org.mockito.Mock
-import org.mockito.MockitoAnnotations
 import org.mockito.Mockito.*
 
+/**
+ * Unit tests for SnowflakeManager.
+ *
+ * SnowflakeManager.sqlApi is now constructor-injected (default = real client),
+ * so we can pass in a mock without reflection.
+ *
+ * getUserProfileById expects: result["data"][[row]] where row[0] is a JSON string
+ *   like {"interests":"...","complexity":"..."}
+ * getDriverNum is hardcoded to return 1 (no SQL call).
+ * generateStartMessage calls sqlApi.execute once (for CORTEX.COMPLETE).
+ */
 class SnowflakeManagerTest {
 
-    @Mock
     private lateinit var mockSqlApi: SnowflakeSqlApiClient
-    
     private lateinit var manager: SnowflakeManager
 
     @Before
     fun setup() {
-        MockitoAnnotations.openMocks(this)
-        manager = SnowflakeManager()
-        // use reflection to inject mock
-        val field = SnowflakeManager::class.java.getDeclaredField("sqlApi")
-        field.isAccessible = true
-        field.set(manager, mockSqlApi)
+        mockSqlApi = mock(SnowflakeSqlApiClient::class.java)
+        manager = SnowflakeManager(sqlApi = mockSqlApi)
+    }
+
+    // ------- getUserProfileById -------
+
+    @Test
+    fun testGetUserProfileById_Success() {
+        runBlocking {
+            // The current impl queries: SELECT profile FROM USERS WHERE user_id = '...'
+            // and expects data[0][0] to be a JSON string with "interests" and "complexity" keys.
+            val profileStr = JSONObject().apply {
+                put("interests", "Physics,Music,Travel")
+                put("complexity", "advanced")
+            }.toString()
+
+            val responseJson = JSONObject().apply {
+                put("data", JSONArray().apply {
+                    put(JSONArray().apply { put(profileStr) })
+                })
+            }
+            `when`(mockSqlApi.execute(anyString())).thenReturn(responseJson)
+
+            val profile = manager.getUserProfileById("aldan_creo")
+
+            assertEquals("Physics,Music,Travel", profile["interests"])
+            assertEquals("advanced", profile["complexity"])
+        }
     }
 
     @Test
-    fun testGetUserProfileById_Success() = runBlocking {
-        // arrange
-        val responseJson = JSONObject().apply {
-            val data = JSONArray().apply {
-                put(JSONArray().apply {
-                    put("Physics,Music,Travel")
-                    put("advanced")
-                })
+    fun testGetUserProfileById_NoData() {
+        runBlocking {
+            val responseJson = JSONObject().apply {
+                put("data", JSONArray())
             }
-            put("data", data)
+            `when`(mockSqlApi.execute(anyString())).thenReturn(responseJson)
+
+            val profile = manager.getUserProfileById("unknown_user")
+
+            // Should return defaults
+            assertEquals("Cognitive Science, Music, Travel", profile["interests"])
+            assertEquals("intermediate", profile["complexity"])
         }
-        `when`(mockSqlApi.execute(any<String>())).thenReturn(responseJson)
-
-        // act
-        val profile = manager.getUserProfileById("aldan_creo")
-
-        // assert
-        assertEquals("Physics,Music,Travel", profile["interests"])
-        assertEquals("advanced", profile["complexity"])
-        verify(mockSqlApi, times(1)).execute(any<String>())
     }
 
     @Test
-    fun testGetUserProfileById_NoData() = runBlocking {
-        // arrange
-        val responseJson = JSONObject().apply {
-            put("data", JSONArray())
+    fun testGetUserProfileById_TableNotFound() {
+        runBlocking {
+            val responseJson = JSONObject().apply {
+                put("code", "002003")
+                put("message", "Table does not exist")
+            }
+            `when`(mockSqlApi.execute(anyString())).thenReturn(responseJson)
+
+            val profile = manager.getUserProfileById("aldan_creo")
+
+            // Error path should return defaults
+            assertEquals("Cognitive Science, Music, Travel", profile["interests"])
+            assertEquals("intermediate", profile["complexity"])
         }
-        `when`(mockSqlApi.execute(any<String>())).thenReturn(responseJson)
+    }
 
-        // act
-        val profile = manager.getUserProfileById("unknown_user")
+    // ------- getDriverNum -------
 
-        // assert - should return defaults
-        assertEquals("Cognitive Science, Music, Travel", profile["interests"])
-        assertEquals("intermediate", profile["complexity"])
+    @Test
+    fun testGetDriverNum_AlwaysReturnsOne() {
+        runBlocking {
+            // getDriverNum is hardcoded to return 1 - no SQL call expected
+            val driverId = manager.getDriverNum("ana_campillo")
+            assertEquals(1, driverId)
+            verifyNoInteractions(mockSqlApi)
+        }
+    }
+
+    // ------- generateStartMessage -------
+
+    @Test
+    fun testGenerateStartMessage_ReturnsMessage() {
+        runBlocking {
+            val startMsgResponse = JSONObject().apply {
+                put("data", JSONArray().apply {
+                    put(JSONArray().apply {
+                        put("\"Hello, let's talk about cognitive science today!\"")
+                    })
+                })
+            }
+            `when`(mockSqlApi.execute(anyString())).thenReturn(startMsgResponse)
+
+            val message = manager.generateStartMessage(1)
+
+            assertNotNull(message)
+            assertFalse(message.isEmpty())
+            verify(mockSqlApi, atLeastOnce()).execute(anyString())
+        }
     }
 
     @Test
-    fun testGetDriverNum_Success() = runBlocking {
-        // arrange
-        val responseJson = JSONObject().apply {
-            val data = JSONArray().apply {
-                put(JSONArray().apply {
-                    put(2)
-                })
+    fun testGenerateStartMessage_FallsBackToHello() {
+        runBlocking {
+            // If data is missing, should return "Hello!"
+            val emptyResponse = JSONObject().apply {
+                put("data", JSONArray())
             }
-            put("data", data)
+            `when`(mockSqlApi.execute(anyString())).thenReturn(emptyResponse)
+
+            val message = manager.generateStartMessage(999)
+
+            assertEquals("Hello!", message)
         }
-        `when`(mockSqlApi.execute(any<String>())).thenReturn(responseJson)
-
-        // act
-        val driverId = manager.getDriverNum("ana_campillo")
-
-        // assert
-        assertEquals(2, driverId)
-    }
-
-    @Test
-    fun testGetDriverNum_DefaultToOne() = runBlocking {
-        // arrange
-        val responseJson = JSONObject().apply {
-            put("data", JSONArray())
-        }
-        `when`(mockSqlApi.execute(any<String>())).thenReturn(responseJson)
-
-        // act
-        val driverId = manager.getDriverNum("unknown")
-
-        // assert - should default to 1
-        assertEquals(1, driverId)
-    }
-
-    @Test
-    fun testGenerateStartMessage_WithProfile() = runBlocking {
-        // arrange - mock getDriverNum call
-        val driverNumResponse = JSONObject().apply {
-            val data = JSONArray().apply {
-                put(JSONArray().apply {
-                    put("aldan_creo")
-                })
-            }
-            put("data", data)
-        }
-
-        val profileResponse = JSONObject().apply {
-            val data = JSONArray().apply {
-                put(JSONArray().apply {
-                    put("Physics,Music")
-                    put("advanced")
-                })
-            }
-            put("data", data)
-        }
-
-        val startMsgResponse = JSONObject().apply {
-            val data = JSONArray().apply {
-                put(JSONArray().apply {
-                    put("\"Hello, let's talk about physics and music today!\"")
-                })
-            }
-            put("data", data)
-        }
-
-        `when`(mockSqlApi.execute(any())).thenReturn(driverNumResponse)
-            .thenReturn(profileResponse)
-            .thenReturn(startMsgResponse)
-
-        // act
-        val message = manager.generateStartMessage(1)
-
-        // assert
-        assertNotNull(message)
-        assertFalse(message.isEmpty())
-        verify(mockSqlApi, atLeastOnce()).execute(any<String>())
-    }
-
-    @Test
-    fun testGenerateStartMessage_EmptyProfile() = runBlocking {
-        // arrange - simulate no profile found
-        val driverNumResponse = JSONObject().apply {
-            put("data", JSONArray())
-        }
-
-        val startMsgResponse = JSONObject().apply {
-            val data = JSONArray().apply {
-                put(JSONArray().apply {
-                    put("\"Hello there!\"")
-                })
-            }
-            put("data", data)
-        }
-
-        `when`(mockSqlApi.execute(any())).thenReturn(driverNumResponse)
-            .thenReturn(startMsgResponse)
-
-        // act
-        val message = manager.generateStartMessage(999)
-
-        // assert - should still return non-empty message
-        assertNotNull(message)
-        assertFalse(message.isEmpty())
     }
 }
