@@ -163,18 +163,22 @@ class VoiceAgentService : Service() {
             try {
                 // 1. Gather context first while music is still playing full volume
                 val greetingSeed = kotlin.random.Random.nextInt(1000, 9999)
-                val recentInteractions = snowflakeManager.getRecentInteractionSummaries(currentDriverId, limit = 3)
-                val lastTripSummary = snowflakeManager.getLastTripSummary(currentDriverId)
-                val startMsg = snowflakeManager.generateStartMessage(currentDriverId, greetingSeed, recentInteractions)
-                val topics = snowflakeManager.generateConversationTopics(driverId = 1)
-                val profile = snowflakeManager.getUserProfileById(currentDriverId)
-                val events = calendarContext.getUpcomingEvents(limit = 5, windowMinutes = 240)
+                
+                // Robust data gathering with fallbacks
+                val recentInteractions = try { snowflakeManager.getRecentInteractionSummaries(currentDriverId, limit = 3) } catch (e: Exception) { emptyList() }
+                val lastTripSummary = try { snowflakeManager.getLastTripSummary(currentDriverId) } catch (e: Exception) { "" }
+                val startMsg = try { snowflakeManager.generateStartMessage(currentDriverId, greetingSeed, recentInteractions) } catch (e: Exception) { "" }
+                val topics = try { snowflakeManager.generateConversationTopics(driverId = 1) } catch (e: Exception) { "" }
+                val profile = try { snowflakeManager.getUserProfileById(currentDriverId) } catch (e: Exception) { emptyMap() }
+                val events = try { calendarContext.getUpcomingEvents(limit = 5, windowMinutes = 240) } catch (e: Exception) { emptyList() }
+                
                 if (events.isNotEmpty()) {
-                    snowflakeManager.insertCalendarEvents(driverId = 1, events = events)
+                    try { snowflakeManager.insertCalendarEvents(driverId = 1, events = events) } catch (e: Exception) { Log.w(TAG, "Failed to insert events") }
                 }
 
                 val info = _riskEngine?.getRiskStateDebugInfo()
                 val profileDetails = _riskEngine?.getDriverProfileDetails() ?: emptyMap()
+                val driverName = profileDetails["name"] ?: profile["name"] ?: currentDriverId
                 
                 // Build rich calendar context
                 val calendarContextStr = if (events.isNotEmpty()) {
@@ -222,7 +226,6 @@ $historyContext$calendarContextStr"""
                 
                 val roadType = _riskEngine?.getRoadType() ?: RoadType.MIXED
                 val traffic = _riskEngine?.getTrafficCondition() ?: TrafficCondition.MODERATE
-                val driverName = profileDetails["name"] ?: profile["name"] ?: currentDriverId
 
                 val systemContext = """
                     |YOU ARE: The cognitive co-pilot for $driverName.
@@ -250,6 +253,12 @@ $historyContext$calendarContextStr"""
                     |MISSION: Monitor $driverName's drowsiness and intervene with cognitive stimuli before they fall asleep. 
                     |Your presence is essential for their safety on this $roadType drive.
                     |
+                    |CAPABILITY CONSTRAINTS (STRICT):
+                    |- NO NAVIGATION: You CANNOT navigate the user, change routes, or provide turn-by-turn directions.
+                    |- NO VEHICLE CONTROL: You CANNOT control the car, windows, climate, or any vehicle systems.
+                    |- INFORMATIONAL ONLY: Search results (nearby places) are for driver AWARENESS only. 
+                    |  Frame them as: "I found a [Place] about [X] miles away," NEVER "I'll navigate you to [Place]."
+                    |
                     |INTERACTION LEVELS (MANDATORY CONSTRAINTS):
                     |Level 0: ACTIVE SILENCE. Do not speak unless spoken to.
                     |Level 1: CHECK-IN. Binary (Yes/No) questions only. Example: "Are you holding up okay, $driverName?"
@@ -269,9 +278,10 @@ $historyContext$calendarContextStr"""
                 """.trimMargin()
                 
                 Log.d(TAG, "System context: $systemContext")
-
-                val initialMessage = startMsg.ifBlank { generateInitialGreeting() }
-                Log.i(TAG, "✅ Context ready. Initial message: $initialMessage")
+                
+                // ALWAYS have an initial message, especially for START_DRIVE
+                val initialMessage = if (startMsg.isNotBlank()) startMsg else generateInitialGreeting(driverName)
+                Log.i(TAG, "✅ Initial message determined: $initialMessage")
 
                 // 2. Now that we're ready to talk, fade out Spotify (snappier 2s fade)
                 Log.i(TAG, "🎵 Fading out Spotify music (2000ms)...")
@@ -313,8 +323,10 @@ $historyContext$calendarContextStr"""
                         )
                     ),
                     dynamicVariables = mapOf(
-                        "driver_name" to currentDriverId,
+                        "driver_name" to driverName,
                         "interaction_type" to currentInteractionType,
+                        "road_type" to roadType.toString(),
+                        "traffic_condition" to traffic.toString(),
                         "driver_interests" to (profile["interests"] ?: ""),
                         "driver_complexity" to (profile["complexity"] ?: ""),
                         "interaction_history" to interactionHistory.joinToString("\n---\n"),
@@ -542,7 +554,7 @@ $historyContext$calendarContextStr"""
             // 1. Play outro
             try {
                 playOutro()
-                kotlinx.coroutines.delay(800) 
+                kotlinx.coroutines.delay(1800) 
             } catch (e: Exception) {
                 Log.e(TAG, "Cleanup: Outro failed: ${e.message}")
             }
@@ -773,16 +785,17 @@ $historyContext$calendarContextStr"""
         }
     }
 
-    private fun generateInitialGreeting(): String {
+    private fun generateInitialGreeting(name: String): String {
+        val driverName = if (name.equals("driver", true)) "friend" else name
         val greeting = when (currentInteractionType) {
             VoiceAgentTrigger.INTERACTION_TYPE_START_DRIVE -> {
-                "Hey $currentDriverId! Ready to hit the road? Let's make this a smooth drive ahead."
+                "Hey $driverName! Ready to hit the road? Let's make this a smooth drive ahead."
             }
             else -> {
-                "Hey $currentDriverId, just checking in. How are you doing?"
+                "Hey $driverName, just checking in. How are you doing?"
             }
         }
-        Log.d(TAG, "Generated initial greeting: $greeting")
+        Log.d(TAG, "Generated fallback initial greeting: $greeting")
         return greeting
     }
 
