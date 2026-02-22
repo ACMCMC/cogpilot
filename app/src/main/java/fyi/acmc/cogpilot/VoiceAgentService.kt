@@ -191,9 +191,32 @@ class VoiceAgentService : Service() {
                         "stop_conversation" to object : ClientTool {
                             override suspend fun execute(parameters: Map<String, Any>): ClientToolResult? {
                                 Log.i(TAG, "📢 Agent requested stop_conversation tool")
-                                serviceScope.launch {
-                                    session?.endSession()
-                                }
+                                session?.endSession()
+                                stopVoiceSession()
+                                return ClientToolResult.success("stopped")
+                            }
+                        },
+                        "stopConversation" to object : ClientTool {
+                            override suspend fun execute(parameters: Map<String, Any>): ClientToolResult? {
+                                Log.i(TAG, "📢 Agent requested stopConversation tool")
+                                session?.endSession()
+                                stopVoiceSession()
+                                return ClientToolResult.success("stopped")
+                            }
+                        },
+                        "end_session" to object : ClientTool {
+                            override suspend fun execute(parameters: Map<String, Any>): ClientToolResult? {
+                                Log.i(TAG, "📢 Agent requested end_session tool")
+                                session?.endSession()
+                                stopVoiceSession()
+                                return ClientToolResult.success("stopped")
+                            }
+                        },
+                        "endSession" to object : ClientTool {
+                            override suspend fun execute(parameters: Map<String, Any>): ClientToolResult? {
+                                Log.i(TAG, "📢 Agent requested endSession tool")
+                                session?.endSession()
+                                stopVoiceSession()
                                 return ClientToolResult.success("stopped")
                             }
                         }

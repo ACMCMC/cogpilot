@@ -1,5 +1,7 @@
 package fyi.acmc.cogpilot
 
+import android.util.Log
+
 import android.content.Context
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -46,16 +48,22 @@ class MapsRoadsClient(private val context: Context) {
 
     private fun fetchNearestRoadPlaceId(lat: Double, lon: Double): String? {
         val url = "https://roads.googleapis.com/v1/nearestRoads?points=$lat,$lon&key=$apiKey"
+        Log.d("MapsRoadsClient","nearestRoads request: $url")
         val body = http.newCall(Request.Builder().url(url).build()).execute().body?.string() ?: return null
+        Log.d("MapsRoadsClient","nearestRoads response: ${body.take(200)}")
         val json = JSONObject(body)
         val points = json.optJSONArray("snappedPoints") ?: return null
         val point0 = points.optJSONObject(0) ?: return null
-        return point0.optString("placeId", null)
+        val pid = point0.optString("placeId", null)
+        Log.d("MapsRoadsClient","nearestRoads placeId= $pid")
+        return pid
     }
 
     private fun fetchSpeedLimit(lat: Double, lon: Double): SpeedLimitInfo? {
         val url = "https://roads.googleapis.com/v1/speedLimits?points=$lat,$lon&key=$apiKey"
+        Log.d("MapsRoadsClient","speedLimits request: $url")
         val body = http.newCall(Request.Builder().url(url).build()).execute().body?.string() ?: return null
+        Log.d("MapsRoadsClient","speedLimits response: ${body.take(200)}")
         val json = JSONObject(body)
         val speedLimits = json.optJSONArray("speedLimits") ?: return null
         val limit0 = speedLimits.optJSONObject(0) ?: return null
@@ -72,7 +80,9 @@ class MapsRoadsClient(private val context: Context) {
         val destLat = lat + dLat
         val destLon = lon + dLon
         val url = "https://maps.googleapis.com/maps/api/distancematrix/json?origins=$lat,$lon&destinations=$destLat,$destLon&departure_time=now&traffic_model=best_guess&key=$apiKey"
+        Log.d("MapsRoadsClient","distanceMatrix request: $url")
         val body = http.newCall(Request.Builder().url(url).build()).execute().body?.string() ?: return null
+        Log.d("MapsRoadsClient","distanceMatrix response: ${body.take(200)}")
         val json = JSONObject(body)
         val rows = json.optJSONArray("rows") ?: return null
         val elements = rows.optJSONObject(0)?.optJSONArray("elements") ?: return null
@@ -90,7 +100,9 @@ class MapsRoadsClient(private val context: Context) {
         }
 
         val url = "https://maps.googleapis.com/maps/api/place/details/json?place_id=$placeId&fields=types&key=$apiKey"
+        Log.d("MapsRoadsClient","placeDetails request: $url")
         val body = http.newCall(Request.Builder().url(url).build()).execute().body?.string() ?: return emptyList()
+        Log.d("MapsRoadsClient","placeDetails response: ${body.take(200)}")
         val json = JSONObject(body)
         val result = json.optJSONObject("result") ?: return emptyList()
         val types = result.optJSONArray("types")

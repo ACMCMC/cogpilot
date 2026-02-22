@@ -262,13 +262,15 @@ class MainActivity : AppCompatActivity() {
                 callback = { speed, heading ->
                     uiManager.updateMetrics(speed, heading)
                 },
-                debug = { speed, heading, roadCtx ->
+                debug = { speed, heading, roadCtx, lat, lon ->
                     uiManager.updateDebug(
                         speed = speed,
                         heading = heading,
                         riskScore = lastRiskScore,
                         voiceActive = voiceActive,
-                        roadCtx = roadCtx
+                        roadCtx = roadCtx,
+                        lat = lat,
+                        lon = lon
                     )
                 }
             )
@@ -749,15 +751,18 @@ class UIManager(
         heading: Float,
         riskScore: Float,
         voiceActive: Boolean,
-        roadCtx: RoadContext
+        roadCtx: RoadContext,
+        lat: Double,
+        lon: Double
     ) {
         val placeId = roadCtx.placeId ?: "-"
         val types = if (roadCtx.types.isNotEmpty()) roadCtx.types.joinToString(",") else "-"
         val speedLimit = roadCtx.speedLimitMph?.let { "%.1f mph".format(it) } ?: "-"
         val traffic = roadCtx.trafficRatio?.let { "%.2f".format(it) } ?: "-"
-
+        
         debugText.text = """
 speed: %.1f mph | heading: %.0f°
+location: %.5f, %.5f
 risk: %.2f | voice: %s
 road place_id: %s
 road types: %s
@@ -765,11 +770,8 @@ speed limit: %s | traffic: %s
 """.trimIndent().format(
             speed,
             heading,
-            riskScore,
-            if (voiceActive) "active" else "idle",
-            placeId,
-            types,
-            speedLimit,
+            lat,
+            lon,
             traffic
         )
     }

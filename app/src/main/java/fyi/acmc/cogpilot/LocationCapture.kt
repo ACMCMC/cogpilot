@@ -27,14 +27,14 @@ class LocationCapture(private val context: Context) {
     private var lastLocation: Location? = null
     private var locationListener: LocationListener? = null
     private var captureCallback: ((speed: Float, heading: Float) -> Unit)? = null
-    private var debugCallback: ((speed: Float, heading: Float, roadCtx: RoadContext) -> Unit)? = null
+    private var debugCallback: ((speed: Float, heading: Float, roadCtx: RoadContext, lat: Double, lon: Double) -> Unit)? = null
     private var snowflakeManager: SnowflakeManager? = null
     private val mapsClient = MapsRoadsClient(context)
 
     fun startCapture(
         snowflakeManager: SnowflakeManager,
         callback: (speed: Float, heading: Float) -> Unit,
-        debug: ((speed: Float, heading: Float, roadCtx: RoadContext) -> Unit)? = null
+        debug: ((speed: Float, heading: Float, roadCtx: RoadContext, lat: Double, lon: Double) -> Unit)? = null
     ) {
         this.snowflakeManager = snowflakeManager
         captureCallback = callback
@@ -85,7 +85,7 @@ class LocationCapture(private val context: Context) {
                             speedOverLimit = speedOver
                         )
 
-                        debugCallback?.invoke(speed, heading, roadCtx)
+                        debugCallback?.invoke(speed, heading, roadCtx, location.latitude, location.longitude)
                     }
                 }
 
