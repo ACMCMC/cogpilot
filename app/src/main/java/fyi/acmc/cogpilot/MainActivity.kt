@@ -71,7 +71,15 @@ class MainActivity : AppCompatActivity() {
             },
             { onVoiceToggle() }
         )
-        setContentView(uiManager.createUI())
+        val rootView = uiManager.createUI()
+        setContentView(rootView)
+        // Make content respect the status bar and navigation bar heights.
+        // The scroll view background fills edge-to-edge; the padding keeps content visible.
+        androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(rootView) { v, insets ->
+            val bars = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+            v.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            insets
+        }
         
         if (isDrivingMode) {
             Log.i("CogPilot", "✅ DRIVING MODE DETECTED - Full interactive support enabled")
@@ -95,8 +103,9 @@ class MainActivity : AppCompatActivity() {
         // register AI log receiver
         aiLogReceiver = object : android.content.BroadcastReceiver() {
             override fun onReceive(context: android.content.Context, intent: android.content.Intent) {
-                val msg = intent.getStringExtra("ai_msg") ?: return
-                uiManager.logAiInput(msg)
+                val msg = intent.getStringExtra(VoiceAgentService.EXTRA_AI_MSG) ?: return
+                val source = intent.getStringExtra(VoiceAgentService.EXTRA_MSG_SOURCE)
+                uiManager.logAiInput(msg, source)
             }
         }
         val filter = android.content.IntentFilter("fyi.acmc.cogpilot.voice.AI_LOG")
@@ -800,10 +809,20 @@ class UIManager(
         debugText.text = msg
     }
 
-    fun logAiInput(msg: String) {
-        aiInputHistory.add(msg)
-        if (aiInputHistory.size > 5) aiInputHistory.removeAt(0)
-        aiLogText.text = aiInputHistory.joinToString("\n\n") { "• $it" }
+    fun logAiInput(msg: String, source: String? = null) {
+        val timestamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
+            .format(java.util.Date())
+        val speaker = source ?: "📡 Context"  // null = context update (no source)
+        // Distinguish driver vs agent visually
+        val entry = when {
+            source == null -> "[$timestamp] 📡 context\n$msg"
+            source.contains("You", ignoreCase = true)  -> "[$timestamp] $speaker\n$msg"
+            else -> "[$timestamp] $speaker\n$msg"
+        }
+        aiInputHistory.add(entry)
+        if (aiInputHistory.size > 10) aiInputHistory.removeAt(0)
+        // Build text with separators between turns
+        aiLogText.text = aiInputHistory.joinToString("\n" + "—".repeat(28) + "\n")
     }
 
     fun updateDebug(
@@ -859,30 +878,42 @@ speed limit: %s | traffic: %s""".trimIndent().format(
     }
 
     private fun createAiLogCard(): com.google.android.material.card.MaterialCardView {
-        val card = createCard(android.graphics.Color.parseColor("#0B0F14"), 10f, "#FF6B35")
+        val card = createCard(android.graphics.Color.parseColor("#080D12"), 10f, "#5A00FF")
         val content = android.widget.LinearLayout(activity).apply {
             orientation = android.widget.LinearLayout.VERTICAL
             setPadding(20, 20, 20, 20)
         }
 
-        val label = TextView(activity).apply {
-            text = "Model Inputs (Last 5)"
-            textSize = 12f
-            setTextColor(android.graphics.Color.parseColor("#FF6B35"))
-            typeface = Typeface.SANS_SERIF
-            setPadding(0, 0, 0, 12)
+        val headerRow = android.widget.LinearLayout(activity).apply {
+            orientation = android.widget.LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, 14)
         }
+        val label = TextView(activity).apply {
+            text = "🎙️  Conversation log"
+            textSize = 13f
+            setTextColor(android.graphics.Color.parseColor("#A0AAFF"))
+            typeface = Typeface.SANS_SERIF
+            layoutParams = android.widget.LinearLayout.LayoutParams(0, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val hint = TextView(activity).apply {
+            text = "last 10"
+            textSize = 10f
+            setTextColor(android.graphics.Color.parseColor("#445566"))
+            typeface = Typeface.SANS_SERIF
+        }
+        headerRow.addView(label)
+        headerRow.addView(hint)
 
         aiLogText = TextView(activity).apply {
-            text = "awaiting AI..."
-            textSize = 11f
-            setTextColor(android.graphics.Color.parseColor("#FFB3A1"))
-            typeface = Typeface.SANS_SERIF
-            isScrollContainer = true
-            setLineSpacing(0f, 1.5f)
+            text = "Waiting for conversation..."
+            textSize = 12f
+            setTextColor(android.graphics.Color.parseColor("#C8D8E8"))
+            typeface = Typeface.MONOSPACE
+            setLineSpacing(4f, 1.4f)
         }
 
-        content.addView(label)
+        content.addView(headerRow)
         content.addView(aiLogText)
         card.addView(content)
         return card

@@ -13,12 +13,13 @@ import androidx.core.content.ContextCompat
 import io.elevenlabs.ConversationClient
 import io.elevenlabs.ConversationConfig
 import io.elevenlabs.ConversationSession
+import io.elevenlabs.Overrides
+import io.elevenlabs.AgentOverrides
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.cancel
-import org.json.JSONObject
 import io.elevenlabs.ClientTool
 import io.elevenlabs.ClientToolResult
 
@@ -38,6 +39,7 @@ class VoiceAgentService : Service() {
         const val EXTRA_STATUS = "status"
         const val ACTION_AI_LOG = "fyi.acmc.cogpilot.voice.AI_LOG"
         const val EXTRA_AI_MSG = "ai_msg"
+        const val EXTRA_MSG_SOURCE = "msg_source"
     }
 
     private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
@@ -51,7 +53,6 @@ class VoiceAgentService : Service() {
     private var pendingDrivingContext: String? = null
     private var pendingTopics: String? = null
     private var pendingEventSummary: String? = null
-    private var pendingStartMessage: String? = null
 
     inner class VoiceAgentBinder : Binder() {
         fun getService(): VoiceAgentService = this@VoiceAgentService
@@ -138,13 +139,18 @@ class VoiceAgentService : Service() {
                     appendLine("Interests: ${profile["interests"]}")
                     appendLine("Complexity preference: ${profile["complexity"]}")
                     appendLine("Address the driver by name ($displayName) naturally but not on every turn.")
+                    appendLine()
+                    appendLine("[ENDING THE CONVERSATION]")
+                    appendLine("You have a tool called `end_session`. Call it when:")
+                    appendLine("- The driver has responded 2-3 times and sounds engaged and awake.")
+                    appendLine("- The driver says they're fine, done, or wants to stop.")
+                    appendLine("- You've completed a natural conversation arc (question → response → follow-up → wrap-up).")
+                    appendLine("End gracefully with a short closing line before calling the tool, e.g. 'Drive safe, I'll check in again soon.'")
                 }
                 Log.d(TAG, "Queued system context:\n$systemContext")
                 pendingSystemContext = systemContext
-                // also log/start message
-                Log.d(TAG, "Start message: $startMsg")
-                pendingStartMessage = startMsg
-                if(events.isNotEmpty()){
+                Log.d(TAG, "First message (Cortex): $startMsg")
+                if (events.isNotEmpty()) {
                     val eventSummary = events.joinToString("; ") { ev ->
                         val title = ev.title.ifBlank { "(untitled)" }
                         val loc = ev.location?.let { " @ $it" } ?: ""
@@ -158,6 +164,11 @@ class VoiceAgentService : Service() {
                 val config = ConversationConfig(
                     agentId = BuildConfig.ELEVENLABS_AGENT_ID,
                     userId = "driver",
+                    overrides = Overrides(
+                        agent = AgentOverrides(
+                            firstMessage = startMsg.ifBlank { null }
+                        )
+                    ),
                     onConnect = { conversationId ->
                         Log.i(TAG, "✓ Connected: $conversationId")
                         updateNotification("🎙️ Listening...")
@@ -174,19 +185,13 @@ class VoiceAgentService : Service() {
                             Log.d(TAG, "✓ Sent driving context")
                             pendingDrivingContext = null
                         }
-                        // 3. Personalised conversation opener
-                        pendingStartMessage?.let {
-                            sendUpdate(it)
-                            Log.d(TAG, "✓ Sent start message")
-                            pendingStartMessage = null
-                        }
-                        // 4. Suggested topics
+                        // 3. Suggested topics
                         pendingTopics?.let {
                             sendUpdate("Suggested topics: $it")
                             Log.d(TAG, "✓ Sent pre-convo topics")
                             pendingTopics = null
                         }
-                        // 5. Calendar events
+                        // 4. Calendar events
                         pendingEventSummary?.let {
                             sendUpdate("Upcoming calendar events: $it")
                             Log.d(TAG, "✓ Sent calendar context")
@@ -225,22 +230,14 @@ class VoiceAgentService : Service() {
                             Log.d(TAG, "Voice detected: $score")
                         }
                     },
-                    onMessage = { source, messageJson ->
-                        Log.d(TAG, "Message from $source: ${messageJson.take(500)}")
-                        // broadcast agent responses to UI
-                        if (source == "agent") {
-                            try {
-                                val msg = JSONObject(messageJson).optString("message", "")
-                                if (msg.isNotEmpty()) {
-                                    val intent = Intent(ACTION_AI_LOG).apply {
-                                        putExtra(EXTRA_AI_MSG, "🤖 Agent: $msg")
-                                    }
-                                    sendBroadcast(intent)
-                                }
-                            } catch (e: Exception) {
-                                Log.w(TAG, "Failed to parse agent message: ${e.message}")
-                            }
-                        }
+                    // Use dedicated callbacks instead of parsing onMessage JSON
+                    onAgentResponse = { agentResponse ->
+                        Log.d(TAG, "Agent: $agentResponse")
+                        broadcastAiLog(agentResponse, "🤖 Agent")
+                    },
+                    onUserTranscript = { userTranscript ->
+                        Log.d(TAG, "Driver: $userTranscript")
+                        broadcastAiLog(userTranscript, "🧑 You")
                     },
                     onUnhandledClientToolCall = { call ->
                         Log.w(TAG, "Unhandled tool call: $call")
@@ -391,12 +388,17 @@ class VoiceAgentService : Service() {
         return "[CURRENT DRIVING CONDITIONS]\nThe driver ${parts.joinToString("; ")}."
     }
 
-    private fun sendUpdate(text:String) {
+    private fun sendUpdate(text: String) {
         Log.d(TAG, "model input: $text")
         session?.sendContextualUpdate(text)
-        // broadcast to UI to show in AI log
+        // broadcast to UI as a context entry (no source label)
+        broadcastAiLog(text, source = null)
+    }
+
+    private fun broadcastAiLog(text: String, source: String?) {
         val intent = Intent(ACTION_AI_LOG).apply {
             putExtra(EXTRA_AI_MSG, text)
+            source?.let { putExtra(EXTRA_MSG_SOURCE, it) }
         }
         sendBroadcast(intent)
     }
