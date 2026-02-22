@@ -91,6 +91,7 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.elevenlabs.android)
+    implementation(libs.androidx.car.app)
     testImplementation(libs.junit)
     testImplementation(libs.mockito.core)
     testImplementation(libs.org.json)

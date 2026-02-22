@@ -94,6 +94,9 @@ class VoiceAgentService : Service() {
         if (_riskEngine == null) {
             _riskEngine = RiskDecisionEngine(this)
         }
+
+        // Verify credentials for headless startup compliance
+        verifyCredentials()
         
         // Register location receiver
         locationReceiver = object : BroadcastReceiver() {
@@ -114,6 +117,15 @@ class VoiceAgentService : Service() {
         }
         val filter = android.content.IntentFilter(ACTION_LOCATION_UPDATE)
         registerReceiver(locationReceiver, filter, Context.RECEIVER_EXPORTED)
+    }
+
+    private fun verifyCredentials() {
+        if (BuildConfig.ELEVENLABS_API_KEY.isEmpty() || BuildConfig.ELEVENLABS_AGENT_ID.isEmpty()) {
+            Log.e(TAG, "❌ PERSISTENCE ERROR: ElevenLabs credentials missing. Background agent will not start.")
+        }
+        if (BuildConfig.SNOWFLAKE_ACCOUNT.isEmpty() || BuildConfig.SNOWFLAKE_PAT_TOKEN.isEmpty()) {
+            Log.w(TAG, "⚠️ PERSISTENCE WARNING: Snowflake credentials missing. Driving logs will not be persisted.")
+        }
     }
 
     private var currentDriverId: String = "aldan_creo"

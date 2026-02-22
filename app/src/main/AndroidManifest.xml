@@ -12,6 +12,14 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Android Auto Features -->
+    <uses-feature
+        android:name="android.hardware.type.automotive"
+        android:required="false" />
+    <uses-feature
+        android:name="android.software.car.templates_host"
+        android:required="false" />
+
     <queries>
         <package android:name="com.spotify.music" />
     </queries>
@@ -27,6 +35,14 @@
         android:usesCleartextTraffic="false"
         tools:ignore="MissingLeanbackLauncher">
 
+        <!-- Android Auto Metadata -->
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
+        <meta-data
+            android:name="androidx.car.app.minCarApiLevel"
+            android:value="1" />
+
         <!-- Main Activity - Works while driving -->
         <activity
             android:name=".MainActivity"
@@ -34,9 +50,13 @@
             android:configChanges="orientation|keyboardHidden|screenSize|uiMode"
             android:launchMode="singleTop"
             android:windowSoftInputMode="adjustNothing">
+            <meta-data
+                android:name="distractionOptimized"
+                android:value="true" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
             <!-- Spotify Auth Redirect -->
             <intent-filter>
@@ -76,11 +96,35 @@
             android:exported="false"
             android:foregroundServiceType="microphone" />
 
-        <!-- Voice agent service for background conversation management -->
         <service
             android:name=".VoiceAgentService"
             android:exported="false"
             android:foregroundServiceType="microphone" />
+
+        <!-- Android Auto Service -->
+        <service
+            android:name=".AutomotiveService"
+            android:exported="true"
+            android:label="@string/app_name">
+            <meta-data
+                android:name="distractionOptimized"
+                android:value="true" />
+            <intent-filter>
+                <action android:name="androidx.car.app.CarAppService" />
+                <!-- Category shifted to MEDIA/DEFAULT for broader compliance -->
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </service>
+
+        <!-- Media Browser Service for Android Auto Compliance -->
+        <service
+            android:name=".CogPilotMediaService"
+            android:exported="true"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.media.browse.MediaBrowserService" />
+            </intent-filter>
+        </service>
 
     </application>
 

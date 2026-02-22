@@ -69,6 +69,7 @@ class RiskDecisionEngine(private val context: Context) {
 
     // Callbacks
     var onRiskStateChanged: ((RiskState, Int, String) -> Unit)? = null  // state, level, reason
+    var onRiskScoreUpdated: ((Float, RiskState) -> Unit)? = null // score, state
 
     // ========================================================================
     // LIFECYCLE
@@ -218,68 +219,64 @@ class RiskDecisionEngine(private val context: Context) {
         val currentLatencyTrend = calculateLatencyTrend()
         val currentSpeedVariance = calculateSpeedVariance()
 
-        // Calculate circadian window and weighted modifier
+        // 1. Calculate Environmental Fatigue Modifier (0.0 to 0.45 range)
         circadianWindow = calculateCircadianWindow()
-        val envModifier = calculateThresholdModifier(sessionMinutes)
+        val envFatigueModifier = calculateThresholdModifier(sessionMinutes)
 
-        // Calculate interaction suppression factor S(t)
+        // 2. Calculate Base Cognitive Fatigue Trend (0.0 to 0.6 range)
+        // Normalize Vocal Energy: 0.8 (Baseline) -> 0.0 risk, 0.35 (Critical) -> 1.0 risk
+        val energyRisk = ((0.8f - currentVocalEnergyTrend) / (0.8f - 0.35f)).coerceIn(0f, 1f)
+        
+        // Normalize Latency: 500ms (Baseline) -> 0.0 risk, 3000ms (Critical) -> 1.0 risk
+        val latencyRisk = ((currentLatencyTrend - 500f) / (3000f - 500f)).coerceIn(0f, 1f)
+        
+        // Base fatigue is weighted telemetry (capped to 0.6 to leave room for environment)
+        val baseFatigueRisk = (energyRisk * 0.3f + latencyRisk * 0.3f)
+
+        // 3. Combined Session Risk Score (Telemetry + Environment)
+        val sessionRiskScore = (baseFatigueRisk + envFatigueModifier).coerceIn(0f, 1.1f)
+
+        // 4. Calculate Interaction Suppression Factor S(t) (0.0 to 1.0)
         val secondsSinceLastInteraction = (now - lastInteractionTime) / 1000f
-        val suppressionFactor = if (lastInteractionTime == 0L) 1.0f 
-                                else Math.min(1.0f, (Math.log(1.0 + secondsSinceLastInteraction) / Math.log(61.0)).toFloat())
+        val suppressionMultiplier = if (lastInteractionTime == 0L) 1.0f 
+                                    else Math.min(1.0f, (Math.log(1.0 + secondsSinceLastInteraction) / Math.log(61.0)).toFloat())
 
-        // Apply thresholds to determine risk state
+        // 5. Final Effective Risk Score (Multiplicative Spacing)
+        val effectiveRiskScore = sessionRiskScore * suppressionMultiplier
+
+        // 6. Map Score to Risk State (Threshold-based)
         val newRiskState = when {
-            // If suppression is very high (just interacted), force STABLE unless CRITICAL
-            suppressionFactor < 0.1f -> RiskState.STABLE
-
-            // CRITICAL: immediate danger signals - reduced tolerance if modifier is high
-            lastVocalEnergy < (0.35f - (envModifier * 0.1f)) || 
-            lastResponseLatencyMs > (3000f - (envModifier * 500f)) || 
-            lastUserResponse == UserResponseType.NO_RESPONSE -> {
-                RiskState.CRITICAL
-            }
-
-            // WINDOW: sustained fatigue with environmental factors
-            (lastVocalEnergy < (0.55f - envModifier) || 
-             lastResponseLatencyMs > (1800f - (envModifier * 300f)) ||
-             (currentRiskState == RiskState.EMERGING && riskStateHistory.toList().count { s -> s == RiskState.EMERGING } > (15 - (envModifier * 5).toInt()))) -> {
-                RiskState.WINDOW
-            }
-
-            // EMERGING: early signs of declining performance - highly affected by environmental weights
-            (lastVocalEnergy < (0.75f - envModifier) || 
-             lastResponseLatencyMs > (1000f - (envModifier * 200f)) ||
-             (sessionMinutes > 45 && circadianWindow == CircadianWindow.CIRCADIAN_LOW) ||
-             isRiskTriggerActive()) -> {
-                
-                // Final check: is the risk suppressed by recent interaction?
-                if (suppressionFactor < 0.95f) {
-                    RiskState.STABLE // Supress emerging triggers until fully recovered
-                } else {
-                    RiskState.EMERGING
-                }
-            }
-
-            // STABLE: all signals nominal
+            effectiveRiskScore >= 0.95f -> RiskState.CRITICAL
+            effectiveRiskScore >= 0.80f -> RiskState.WINDOW // Mandatory trigger point (80%)
+            effectiveRiskScore >= 0.60f -> RiskState.EMERGING
             else -> RiskState.STABLE
         }
 
-        // Determine interaction level based on risk state
-        val newInteractionLevel = determineInteractionLevel(newRiskState, sessionMinutes)
+        // 7. Determine interaction level based on unified score
+        val newInteractionLevel = when {
+            effectiveRiskScore >= 0.95f -> 4 // Safety Command
+            effectiveRiskScore >= 0.88f -> 3 // Persuasive Argument
+            effectiveRiskScore >= 0.80f -> 1 // Mandatory Check-in (80% threshold)
+            else -> 0 // Silence
+        }
 
         // Update state
         if (newRiskState != currentRiskState || newInteractionLevel != currentInteractionLevel) {
             currentRiskState = newRiskState
             currentInteractionLevel = newInteractionLevel
 
-            val reason = buildDecisionRationale(
-                newRiskState, newInteractionLevel, sessionMinutes,
-                currentVocalEnergyTrend, currentLatencyTrend
-            )
+            val reason = "Score: ${String.format("%.2f", effectiveRiskScore)} | " + 
+                        buildDecisionRationale(
+                            newRiskState, newInteractionLevel, sessionMinutes,
+                            currentVocalEnergyTrend, currentLatencyTrend
+                        )
 
             Log.i(TAG, "🔄 Risk state changed: $newRiskState (Level $newInteractionLevel) - $reason")
             onRiskStateChanged?.invoke(newRiskState, newInteractionLevel, reason)
         }
+
+        // Always notify of score update for UI/Android Auto updates
+        onRiskScoreUpdated?.invoke(effectiveRiskScore, newRiskState)
 
         riskStateHistory.add(newRiskState)
         if (riskStateHistory.size > 5) riskStateHistory.poll()
@@ -327,11 +324,11 @@ class RiskDecisionEngine(private val context: Context) {
     private fun calculateThresholdModifier(sessionMinutes: Int): Float {
         var modifier = 0f
 
-        // 1. Driving Time (Duration Weight)
-        // Monotony increases linearly after 45 minutes
-        if (sessionMinutes > 45) modifier += 0.05f
-        if (sessionMinutes > 90) modifier += 0.10f
-        if (sessionMinutes > 150) modifier += 0.15f
+        // 1. Driving Time (Demo Weight - Exaggerated Logarithmic Ramp)
+        // D(t) = 0.3 * ln(1 + t) / ln(6). After 5 mins, modifier = 0.3
+        val durationWeight = (0.3f * (Math.log(1.0 + sessionMinutes) / Math.log(6.0)).toFloat()).coerceAtLeast(0f)
+        modifier += durationWeight
+        if (sessionMinutes > 120) modifier += 0.15f
 
         // 2. Time of Day (Circadian Weight)
         if (circadianWindow == CircadianWindow.CIRCADIAN_LOW) {
@@ -349,11 +346,13 @@ class RiskDecisionEngine(private val context: Context) {
         // 4. Road Complexity & Speed (Environment Weight)
         // Highway driving is more monotonous than mixed or urban roads
         // Sustained high speeds (65-75mph) on highways increase monotony
-        val currentSpeedMph = speedHistory.toList().lastOrNull() ?: 0f
+        // Use average of last 10 samples to be resistant to stoplight/stop-sign outliers
+        val avgSpeedMph = if (speedHistory.isEmpty()) 0f else speedHistory.average().toFloat()
+        
         when (currentRoadType) {
             RoadType.HIGHWAY -> {
                 modifier += 0.07f
-                if (currentSpeedMph in 65f..75f) {
+                if (avgSpeedMph in 65f..75f) {
                     modifier += 0.05f // High speed monotony multiplier
                 }
             }
