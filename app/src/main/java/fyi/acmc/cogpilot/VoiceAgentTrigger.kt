@@ -13,10 +13,11 @@ object VoiceAgentTrigger {
 
     private const val TAG = "VoiceAgentTrigger"
 
-    fun start(context: Context, source: String = "manual") {
-        Log.i(TAG, "Starting voice agent triggered by: $source")
+    fun start(context: Context, driverId: String = "aldan_creo", source: String = "manual") {
+        Log.i(TAG, "Starting voice agent for user=$driverId triggered by: $source")
         val intent = Intent(context, VoiceAgentService::class.java).apply {
             action = VoiceAgentService.ACTION_START
+            putExtra("EXTRA_USER_ID", driverId)
         }
         try {
             ContextCompat.startForegroundService(context, intent)
@@ -31,11 +32,11 @@ object VoiceAgentTrigger {
             action = VoiceAgentService.ACTION_STOP
         }
         try {
-            // sendthe STOP action through startForegroundService so onStartCommand gets called
-            ContextCompat.startForegroundService(context, intent)
+            // use plain startService so Android doesn't expect a foreground call
+            context.startService(intent)
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to stop: ${e.message}")
-            // fallback to stopService
+            Log.e(TAG, "Failed to send stop intent: ${e.message}")
+            // if service is already running we can always call stopService directly
             try {
                 context.stopService(intent)
             } catch (ex: Exception) {

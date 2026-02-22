@@ -18,6 +18,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.cancel
+import org.json.JSONObject
+import io.elevenlabs.ClientTool
+import io.elevenlabs.ClientToolResult
 
 /**
  * VoiceAgentService: Background service managing ElevenLabs voice agent
@@ -50,8 +53,11 @@ class VoiceAgentService : Service() {
         Log.i(TAG, "✓ Service created")
     }
 
+    private var currentDriverId: String = "aldan_creo"
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.i(TAG, "onStartCommand: ${intent?.action}")
+        intent?.getStringExtra("EXTRA_USER_ID")?.let { currentDriverId = it }
         
         when (intent?.action) {
             ACTION_START -> {
@@ -86,10 +92,10 @@ class VoiceAgentService : Service() {
         serviceScope.launch {
             try {
                 // brainstorm topics and calendar context before starting the conversation
-                val topics = snowflakeManager.generateConversationTopics(driverId = 1)
+                val topics = snowflakeManager.generateConversationTopics(driverId = if (currentDriverId == "marta_sanchez") 3 else if (currentDriverId == "ana_campillo") 2 else 1)
                 val events = calendarContext.getUpcomingEvents(limit = 5, windowMinutes = 240)
                 if (events.isNotEmpty()) {
-                    snowflakeManager.insertCalendarEvents(driverId = 1, events = events)
+                    snowflakeManager.insertCalendarEvents(driverId = if (currentDriverId == "marta_sanchez") 3 else if (currentDriverId == "ana_campillo") 2 else 1, events = events)
                 }
 
                 // setup callbacks for the official SDK
@@ -140,7 +146,18 @@ class VoiceAgentService : Service() {
                         Log.w(TAG, "Unhandled tool call: $call")
                     },
                     // register device tools that agent can call
-                    clientTools = mapOf()
+                    clientTools = mapOf(
+                        // agent requests string name 'stop_conversation' to end session
+                        "stop_conversation" to object : ClientTool {
+                            override suspend fun execute(parameters: Map<String, Any>): ClientToolResult? {
+                                Log.i(TAG, "📢 Agent requested stop_conversation tool")
+                                serviceScope.launch {
+                                    session?.endSession()
+                                }
+                                return ClientToolResult.success("stopped")
+                            }
+                        }
+                    )
                 )
 
                 // start the conversation - official SDK handles everything

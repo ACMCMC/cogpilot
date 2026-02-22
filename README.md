@@ -16,9 +16,12 @@ CogPilot is a full-stack mobile system that prevents driver drowsiness by:
 4. **Engaging** the driver directly with Snowflake Arctic + Cortex
 
 ### Key Features
+- ✅ **User Profiles** - select between multiple drivers (Aldan, Ana, Marta) in UI
 - ✅ **Material Design 3 UI** - Modern Android interface optimized for driving
 - ✅ **Direct Snowflake Integration** - JDBC connection, no backend needed
 - ✅ **Snowflake Cortex** - `CORTEX.COMPLETE('snowflake-arctic')` for AI stimulus generation
+- ✅ **Calendar Context** - reads upcoming events to personalize conversation
+- ✅ **Agent-Controlled Stop** - AI can call `stop_conversation` to end the session
 - ✅ **Hybrid Risk Scoring** - Preventative model (monotony + time-on-task - complexity)
 - ✅ **Real-time Telemetry** - 5-second GPS polling, speed/heading variance tracking
 - ✅ **Driving Mode Support** - Works while vehicle is in Drive gear
@@ -97,6 +100,12 @@ cogpilot/
 
 ## 🚀 Quick Start
 
+### Select a user
+After granting permissions, choose your driver from the drop‑down at top of the screen. This updates
+which profile, memory and Snowflake records the app uses. No authentication required; just
+pick the name and you're in.
+
+
 ### Prerequisites
 - Android Studio Giraffe or latest
 - JDK 11+
@@ -143,6 +152,25 @@ adb shell am start -n fyi.acmc.cogpilot/.MainActivity
 ---
 
 ## 📊 Risk Scoring Algorithm
+
+### Telemetry tables
+Snowflake schema now contains:
+- `USERS` (driver profiles)
+- `TRIPS` (trip metadata)
+- `TELEMETRY` (speed/heading, plus road & traffic context)
+- `INTERACTIONS` (previous conversational exchanges)
+- `DRIVER_MEMORY` (long‑form behavioral notes)
+- `CALENDAR_EVENTS` (upcoming appointments imported from device)
+
+Event & memory tables are seeded by the helper script; run again with
+`--skip-telemetry` to only refresh these without waiting for thousands of rows.
+
+```sql
+SELECT * FROM INTERACTIONS LIMIT 5;
+SELECT * FROM DRIVER_MEMORY LIMIT 5;
+SELECT * FROM CALENDAR_EVENTS LIMIT 5;
+```
+
 
 **Hybrid Risk Model:**
 

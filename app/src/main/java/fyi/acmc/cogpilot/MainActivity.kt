@@ -37,6 +37,7 @@ class MainActivity : AppCompatActivity() {
     private var voiceActive = false
     private var lastAutoTriggerTime = 0L
     private var lastRiskScore = 0f
+    private var currentUserId: String = "aldan_creo"
 
     private lateinit var uiManager: UIManager
     
@@ -54,9 +55,13 @@ class MainActivity : AppCompatActivity() {
         
         requestRequiredPermissions()
 
-        uiManager = UIManager(this) {
-            onVoiceToggle()
-        }
+        uiManager = UIManager(this, currentUserId,
+            { newId: String ->
+                currentUserId = newId
+                Log.i("CogPilot","Switched profile to $newId")
+            },
+            { onVoiceToggle() }
+        )
         setContentView(uiManager.createUI())
         
         if (isDrivingMode) {
@@ -137,7 +142,7 @@ class MainActivity : AppCompatActivity() {
         if (voiceActive) {
             Log.i("CogPilot", "🎙️ Voice session starting via button")
             uiManager.setVoiceState(true)
-            VoiceAgentTrigger.start(this, source = "button_click")
+            VoiceAgentTrigger.start(this, driverId = currentUserId, source = "button_click")
         } else {
             Log.i("CogPilot", "🛑 Voice session stopping")
             uiManager.setVoiceState(false)
@@ -190,7 +195,7 @@ class MainActivity : AppCompatActivity() {
                                 if (now - lastAutoTriggerTime > 30000) { // min 30s between auto-triggers
                                     Log.i("CogPilot", "📢 Auto-triggering voice agent - attention dropping (risk: ${riskData.riskScore})")
                                     lastAutoTriggerTime = now
-                                    VoiceAgentTrigger.start(this@MainActivity, source = "attention_drop")
+                                    VoiceAgentTrigger.start(this@MainActivity, driverId = currentUserId, source = "attention_drop")
                                     voiceActive = true
                                     uiManager.setVoiceState(true)
                                 }
@@ -288,7 +293,13 @@ class MainActivity : AppCompatActivity() {
 /**
  * UIManager: Handles all UI rendering for Material Design 3.
  */
-class UIManager(private val activity: AppCompatActivity) {
+class UIManager(
+    private val activity: AppCompatActivity,
+    initialUserId: String,
+    private val onUserChange: (String) -> Unit,
+    private val onVoiceToggle: () -> Unit
+) {
+    private var selectedUserId = initialUserId
 
     private lateinit var statusTitle: TextView
     private lateinit var statusSubtitle: TextView
@@ -302,11 +313,7 @@ class UIManager(private val activity: AppCompatActivity) {
     private lateinit var metricsText: TextView
     private lateinit var debugText: TextView
 
-    private var onVoiceToggle: (() -> Unit)? = null
 
-    constructor(activity: AppCompatActivity, onVoiceToggle: () -> Unit) : this(activity) {
-        this.onVoiceToggle = onVoiceToggle
-    }
 
     fun createUI(): android.widget.ScrollView {
         val scroll = android.widget.ScrollView(activity).apply {
@@ -325,6 +332,9 @@ class UIManager(private val activity: AppCompatActivity) {
             orientation = android.widget.LinearLayout.VERTICAL
             setPadding(20, 24, 20, 32)
         }
+        // user selector
+        container.addView(createUserSelector())
+        container.addView(createSpacerView(12))
 
         container.addView(createHeaderView())
         container.addView(createSpacerView(16))
@@ -374,6 +384,26 @@ class UIManager(private val activity: AppCompatActivity) {
         header.addView(subtitle)
         header.addView(pill)
         return header
+    }
+
+    private fun createUserSelector(): android.view.View {
+        val spinner = android.widget.Spinner(activity)
+        val users = listOf("aldan_creo" to "Aldan", "ana_campillo" to "Ana", "marta_sanchez" to "Marta")
+        val adapter = android.widget.ArrayAdapter(activity, android.R.layout.simple_spinner_item, users.map { it.second })
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        spinner.adapter = adapter
+        spinner.setSelection(users.indexOfFirst { it.first == selectedUserId }.coerceAtLeast(0))
+        spinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: android.widget.AdapterView<*>, view: android.view.View?, position: Int, id: Long) {
+                val newId = users[position].first
+                if (newId != selectedUserId) {
+                    selectedUserId = newId
+                    onUserChange(newId)
+                }
+            }
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>) {}
+        }
+        return spinner
     }
 
     private fun createStatusCard(): com.google.android.material.card.MaterialCardView {

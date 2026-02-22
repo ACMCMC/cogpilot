@@ -42,9 +42,6 @@ load_dotenv()
 # ============================================================================
 
 SCHEMA_SETUP = """
--- Enable iceberg tables for ACID + time-travel
-ALTER SESSION SET ICEBERG_ENABLED = TRUE;
-
 -- Enable query acceleration
 ALTER SESSION SET USE_CACHED_RESULT = TRUE;
 
@@ -56,7 +53,7 @@ ALTER SESSION SET USE_CACHED_RESULT = TRUE;
 CREATE OR REPLACE TABLE USERS (
     user_id VARCHAR PRIMARY KEY,
     name VARCHAR NOT NULL,
-    profile VARIANT NOT NULL,  -- flexible schema: sleep_pattern, risk_triggers, etc
+    profile VARCHAR NOT NULL,  -- json string, parse when needed
     created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
     updated_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
 )
@@ -64,8 +61,8 @@ CLUSTER BY (user_id)
 DATA_RETENTION_TIME_IN_DAYS = 30;
 
 -- TELEMETRY: Time-series data with clustering on user_id + timestamp
-CREATE OR REPLACE ICEBERG TABLE TELEMETRY (
-    telemetry_id STRING DEFAULT gen_random_uuid(),
+CREATE OR REPLACE TABLE TELEMETRY (
+    telemetry_id STRING DEFAULT UUID_STRING(),
     user_id STRING NOT NULL,
     trip_id STRING NOT NULL,
     timestamp_ms BIGINT NOT NULL,
@@ -83,15 +80,12 @@ CREATE OR REPLACE ICEBERG TABLE TELEMETRY (
     created_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
     PRIMARY KEY (telemetry_id)
 )
-CLUSTER BY (user_id, DATE(CONVERT_TIMEZONE('UTC', TIMESTAMP_MILLIS(timestamp_ms))))
-AS (SELECT
-    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
-    WHERE FALSE);  -- create empty table with schema
+CLUSTER BY (user_id, DATE(TO_TIMESTAMP_NTZ(timestamp_ms / 1000)))
+;
 
 -- TRIPS: Journey metadata with geospatial analytics
 CREATE OR REPLACE TABLE TRIPS (
-    trip_id STRING PRIMARY KEY DEFAULT gen_random_uuid(),
+    trip_id STRING PRIMARY KEY DEFAULT UUID_STRING(),
     user_id STRING NOT NULL,
     start_time TIMESTAMP_NTZ NOT NULL,
     end_time TIMESTAMP_NTZ,
@@ -114,7 +108,7 @@ CREATE OR REPLACE TABLE TRIPS (
 
 -- INTERACTIONS: Logged conversation exchanges
 CREATE OR REPLACE TABLE INTERACTIONS (
-    interaction_id STRING PRIMARY KEY DEFAULT gen_random_uuid(),
+    interaction_id STRING PRIMARY KEY DEFAULT UUID_STRING(),
     trip_id STRING NOT NULL,
     user_id STRING NOT NULL,
     interaction_level INT NOT NULL,
@@ -131,7 +125,7 @@ CREATE OR REPLACE TABLE INTERACTIONS (
 
 -- DRIVER_MEMORY: Long-form profile observations (for LLM context)
 CREATE OR REPLACE TABLE DRIVER_MEMORY (
-    memory_id STRING PRIMARY KEY DEFAULT gen_random_uuid(),
+    memory_id STRING PRIMARY KEY DEFAULT UUID_STRING(),
     user_id STRING NOT NULL,
     observation_type VARCHAR,  -- TRIGGER_DISCOVERED, EFFECTIVE_ARGUMENT, PATTERN, BOUNDARY
     observation_text VARCHAR NOT NULL,  -- free-form note
@@ -146,8 +140,8 @@ CREATE OR REPLACE TABLE DRIVER_MEMORY (
 -- MATERIALIZED VIEWS: Pre-aggregated analytics for app queries
 -- ============================================================================
 
--- Driver risk profile (updated hourly or on-demand)
-CREATE OR REPLACE MATERIALIZED VIEW DRIVER_RISK_SUMMARY AS
+-- Driver risk profile (updated on-demand)
+CREATE OR REPLACE VIEW DRIVER_RISK_SUMMARY AS
 SELECT
     user_id,
     COUNT(DISTINCT trip_id) as total_trips,
@@ -161,7 +155,7 @@ FROM TRIPS
 GROUP BY user_id;
 
 -- Real-time trip telemetry summary (for current session)
-CREATE OR REPLACE DYNAMIC TABLE CURRENT_TRIP_METRICS AS
+CREATE OR REPLACE VIEW CURRENT_TRIP_METRICS AS
 SELECT
     user_id,
     trip_id,
@@ -175,18 +169,20 @@ SELECT
     AVG(response_latency_ms) as avg_latency_ms,
     MAX(risk_state) as current_risk_state  -- crude but serviceable
 FROM TELEMETRY
-WHERE timestamp_ms > (UNIX_MILLIS(CURRENT_TIMESTAMP()) - 3600000)  -- last hour
+WHERE TO_TIMESTAMP_NTZ(timestamp_ms / 1000) > DATEADD('hour', -1, CURRENT_TIMESTAMP())
 GROUP BY user_id, trip_id
-LATENCY = '5 minutes';
+;
 
 -- ============================================================================
--- TAGGING & GOVERNANCE
--- ============================================================================
+-- Tagging and governance
+CREATE TAG IF NOT EXISTS PII;
+CREATE TAG IF NOT EXISTS DOMAIN;
+CREATE TAG IF NOT EXISTS SENSITIVE;
 
 -- Tag tables for data lineage
-ALTER TABLE USERS SET TAG 'PII' = 'HIGH', 'DOMAIN' = 'DRIVER_PROFILE';
-ALTER TABLE TELEMETRY SET TAG 'PII' = 'MEDIUM', 'DOMAIN' = 'TELEMETRY', 'SENSITIVE' = 'TRUE';
-ALTER TABLE INTERACTIONS SET TAG 'PII' = 'LOW', 'DOMAIN' = 'CONVERSATION';
+ALTER TABLE USERS SET TAG PII = 'HIGH', DOMAIN = 'DRIVER_PROFILE';
+ALTER TABLE TELEMETRY SET TAG PII = 'MEDIUM', DOMAIN = 'TELEMETRY', SENSITIVE = 'TRUE';
+ALTER TABLE INTERACTIONS SET TAG PII = 'LOW', DOMAIN = 'CONVERSATION';
 
 """
 
@@ -539,8 +535,18 @@ def setup_schema(cursor: DictCursor):
     # Split by semicolon and execute each statement
     statements = SCHEMA_SETUP.split(';')
     for stmt in statements:
-        stmt = stmt.strip()
-        if stmt and not stmt.startswith('--'):
+        # strip comment-only lines + inline comments; lazy parser
+        cleaned_lines = []
+        for line in stmt.splitlines():
+            line = line.strip()
+            if not line or line.startswith('--'):
+                continue
+            if '--' in line:
+                line = line.split('--', 1)[0].strip()
+            if line:
+                cleaned_lines.append(line)
+        stmt = " ".join(cleaned_lines).strip()
+        if stmt:
             try:
                 cursor.execute(stmt)
                 logger.info(f"  ✓ {stmt[:60]}...")
@@ -555,10 +561,11 @@ def populate_users(cursor: DictCursor, profiles: List[Dict]):
     for profile in profiles:
         profile_json = json.dumps(profile["profile"])
         
-        cursor.execute(f"""
+        sql = """
             INSERT INTO USERS (user_id, name, profile)
-            VALUES (%s, %s, PARSE_JSON(%s))
-        """, (profile["user_id"], profile["name"], profile_json))
+            VALUES (%s, %s, %s)
+        """
+        cursor.execute(sql, (profile["user_id"], profile["name"], profile_json))
         
         logger.info(f"  ✓ {profile['name']} ({profile['user_id']}) - Risk: {profile['risk_level']}")
 
@@ -592,9 +599,11 @@ def populate_trips(cursor: DictCursor, profiles: List[Dict], base_date: datetime
     logger.info(f"  ✓ Total trips inserted: {total_trips}")
 
 
-def populate_telemetry(cursor: DictCursor, profiles: List[Dict], base_date: datetime):
-    """Insert granular telemetry with clustering optimization."""
-    logger.info("Populating TELEMETRY table (Iceberg, clustered)...")
+def populate_telemetry(cursor: DictCursor, profiles: List[Dict], base_date: datetime, limit_per_trip: int = 0):
+    """Insert granular telemetry with batching.
+    limit_per_trip=0 disables cap.
+    """
+    logger.info("Populating TELEMETRY table (batched)...")
     
     total_points = 0
     for profile in profiles:
@@ -602,24 +611,29 @@ def populate_telemetry(cursor: DictCursor, profiles: List[Dict], base_date: date
         
         for trip in trips:
             telemetry_points = generate_telemetry(trip)
+            if limit_per_trip and len(telemetry_points) > limit_per_trip:
+                telemetry_points = telemetry_points[:limit_per_trip]
             
+            rows = []
             for point in telemetry_points:
-                cursor.execute(f"""
+                rows.append((
+                    point["user_id"], point["trip_id"], point["timestamp_ms"],
+                    point["speed_mph"], point["heading_degrees"],
+                    point["latitude"], point["longitude"], point["vocal_energy"],
+                    point["response_latency_ms"], point["vad_score"], point["risk_state"]
+                ))
+            if rows:
+                cursor.executemany("""
                     INSERT INTO TELEMETRY (
                         user_id, trip_id, timestamp_ms, speed_mph, heading_degrees,
                         latitude, longitude, vocal_energy, response_latency_ms,
                         vad_score, risk_state
                     )
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """, (
-                    point["user_id"], point["trip_id"], point["timestamp_ms"],
-                    point["speed_mph"], point["heading_degrees"],
-                    point["latitude"], point["longitude"], point["vocal_energy"],
-                    point["response_latency_ms"], point["vad_score"], point["risk_state"]
-                ))
-                total_points += 1
+                """, rows)
+                total_points += len(rows)
         
-        logger.info(f"  ✓ {profile['name']}: {total_trips * 60} telemetry points")
+        logger.info(f"  ✓ {profile['name']}: {len(trips) * 60} telemetry points (capped {limit_per_trip})")
     
     logger.info(f"  ✓ Total telemetry points: {total_points}")
 
@@ -691,6 +705,8 @@ def main():
     parser.add_argument("--warehouse", default="COMPUTE_WH", help="Snowflake warehouse (env: SF_WAREHOUSE)")
     parser.add_argument("--database", default="COGPILOT", help="Snowflake database")
     parser.add_argument("--clear", action="store_true", help="Clear existing data before populating")
+    parser.add_argument("--skip-telemetry", action="store_true", help="Do not insert telemetry data")
+    parser.add_argument("--telemetry-limit", type=int, default=0, help="Max telemetry rows per trip (0=unlimited)")
     
     args = parser.parse_args()
     
@@ -707,6 +723,19 @@ def main():
     try:
         conn = connect_snowflake(user, password, account, warehouse, args.database)
         cursor = conn.cursor(DictCursor)
+
+        # ensure database/schema in session
+        try:
+            cursor.execute(f"USE DATABASE {args.database}")
+        except Exception:
+            cursor.execute(f"CREATE DATABASE IF NOT EXISTS {args.database}")
+            cursor.execute(f"USE DATABASE {args.database}")
+
+        try:
+            cursor.execute("USE SCHEMA PUBLIC")
+        except Exception:
+            cursor.execute("CREATE SCHEMA IF NOT EXISTS PUBLIC")
+            cursor.execute("USE SCHEMA PUBLIC")
         
         if args.clear:
             clear_data(cursor)
@@ -718,7 +747,10 @@ def main():
         
         populate_users(cursor, profiles)
         populate_trips(cursor, profiles, base_date)
-        populate_telemetry(cursor, profiles, base_date)
+        if not args.skip_telemetry:
+            populate_telemetry(cursor, profiles, base_date, limit_per_trip=args.telemetry_limit)
+        else:
+            logger.info("Skipping telemetry population (--skip-telemetry)")
         populate_interactions(cursor, profiles, base_date)
         populate_driver_memory(cursor, profiles)
         
